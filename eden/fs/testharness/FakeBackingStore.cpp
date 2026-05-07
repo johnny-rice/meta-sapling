@@ -248,6 +248,33 @@ FakeBackingStore::getBlobAuxData(
       .semi();
 }
 
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+FakeBackingStore::co_getBlobAuxData(
+    const ObjectId& id,
+    const ObjectFetchContextPtr& context) {
+  {
+    auto data = data_.wlock();
+    data->auxDataLookups.push_back(id);
+  }
+
+  if (serverState_) {
+    co_await serverState_->getFaultInjector().co_checkAsync(
+        "getBlobAuxData", id);
+  }
+
+  auto blobResult = co_await co_getBlob(id, context);
+  co_return BackingStore::GetBlobAuxResult{
+      std::make_shared<BlobAuxDataPtr::element_type>(
+          Hash20::sha1(blobResult.blob->getContents()),
+          blake3Key_ ? Hash32::keyedBlake3(
+                           folly::ByteRange{folly::StringPiece{
+                               blake3Key_->data(), blake3Key_->size()}},
+                           blobResult.blob->getContents())
+                     : Hash32::blake3(blobResult.blob->getContents()),
+          blobResult.blob->getSize()),
+      blobResult.origin};
+}
+
 ImmediateFuture<BackingStore::GetGlobFilesResult>
 FakeBackingStore::getGlobFiles(
     const RootId& id,
