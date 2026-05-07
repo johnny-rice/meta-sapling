@@ -11,18 +11,37 @@ use std::fs::File;
 use std::io::Read;
 #[cfg(target_os = "macos")]
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
-use clap::App;
-use clap::Arg;
+use clap::Parser;
 use commitcloudsubscriber::CommitCloudConfig;
 use commitcloudsubscriber::CommitCloudTcpReceiverService;
 use commitcloudsubscriber::CommitCloudWorkspaceSubscriberService;
 use log::info;
 use serde::Deserialize;
+
+/// The SCM Daemon is a program to speed up and facilitate mercurial commands
+/// and extensions
+///
+/// The SCM Daemon runs as a service, logging its operations directly into
+/// stdout, and init systems like systemd or launchd will automatically handle
+/// everything else, including startup, shutdown, logging redirection, lifecycle
+/// management etc.
+#[derive(Parser)]
+#[command(name = "SCM Daemon", version = "1.0.0")]
+struct Args {
+    /// Config file (toml format)
+    #[arg(long)]
+    config: PathBuf,
+
+    /// Specify path to pidfile
+    #[arg(long)]
+    pidfile: Option<PathBuf>,
+}
 
 /// This is what we're going to decode toml config into.
 /// Each field is optional, meaning that it doesn't have to be present in TOML.
@@ -37,22 +56,7 @@ pub struct Config {
 async fn main() -> Result<()> {
     check_nice()?;
     env_logger::init();
-    let help: &str = &format!(
-        "{}\n{}",
-        "The SCM Daemon is a program to speed up and facilitate mercurial commands and extensions",
-        "The SCM Daemon runs as a service, logging its operations directly into stdout, \
-         and init systems like systemd or launchd will automatically handle everything else, \
-         including startup, shutdown, logging redirection, lifecycle management etc.",
-    );
-
-    let matches = App::new("SCM Daemon")
-        .version("1.0.0")
-        .help(help)
-        .args(&[
-            Arg::from_usage("--config [config file (toml format)]").required(true),
-            Arg::from_usage("--pidfile [specify path to pidfile]").required(false),
-        ])
-        .get_matches();
+    let args = Args::parse();
 
     // write pidfile
     // do not rely on existence of this file to check if program running
@@ -60,19 +64,19 @@ async fn main() -> Result<()> {
     // so add #[cfg(target_os = "macos")] temporary
     #[cfg(target_os = "macos")]
     {
-        if let Some(path) = matches.value_of("pidfile") {
+        if let Some(path) = args.pidfile {
             File::create(path)?.write_fmt(format_args!("{}", std::process::id()))?;
         }
     }
 
-    // read required config path
-    let configfile = matches.value_of("config").unwrap();
-
-    info!("Reading Scm Daemon configuration from {}", configfile);
+    info!(
+        "Reading Scm Daemon configuration from {}",
+        args.config.display(),
+    );
 
     // parse the toml config
     let config: Config = toml::from_str(&{
-        let mut f = File::open(configfile)?;
+        let mut f = File::open(args.config)?;
         let mut content = String::new();
         f.read_to_string(&mut content)?;
         content
