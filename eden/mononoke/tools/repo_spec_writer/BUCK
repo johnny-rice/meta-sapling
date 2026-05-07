@@ -1,0 +1,16 @@
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+
+oncall("scm_server_treehugger")
+
+rust_library(
+    name = "repo_spec_writer",
+    srcs = glob(["src/**/*.rs"]),
+    test_deps = [
+        "//eden/mononoke/common/mononoke_macros:mononoke_macros",
+    ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:sha2",
+        "//configerator/structs/scm/mononoke/repos:repos-rust",
+    ],
+)

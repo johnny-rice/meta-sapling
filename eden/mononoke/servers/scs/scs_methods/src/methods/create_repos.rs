@@ -51,6 +51,11 @@ use mononoke_macros::mononoke;
 use oncall::OncallClient;
 use permission_checker::AclProvider;
 use repo_authorization::AuthorizationContext;
+use repo_spec_writer::RepoIndexEntry;
+use repo_spec_writer::append_to_repo_index;
+use repo_spec_writer::make_repo_spec_config_path;
+use repo_spec_writer::make_repo_spec_file_path;
+use repo_spec_writer::tier_list_for_repo_spec;
 use repos::QuickRepoDefinition;
 use repos::QuickRepoDefinitionShardingConfig;
 use repos::QuickRepoDefinitionTShirtSize;
@@ -59,8 +64,6 @@ use repos::RawRepoConfig;
 use repos::RepoSpec;
 use repos::ShardingRegions;
 use repos::TShirtSize;
-use sha2::Digest;
-use sha2::Sha256;
 use source_control as thrift;
 use thrift::RepoSizeBucket;
 use tracing::info;
@@ -589,25 +592,9 @@ fn make_repo_definition_file_path(repo_id: &RepositoryId) -> String {
     )
 }
 
-/// Returns the tier list for a new RepoSpec-based repo, as static string slices.
-/// Repos under the `aosp/` prefix are additionally placed in the
-/// `aosp_multi_repo_land` tier so multi_repo_land_service can serve them.
-fn tier_list_for_repo_spec(repo_name: &str) -> Vec<&'static str> {
-    if repo_name.starts_with("aosp/") {
-        vec![
-            "gitimport",
-            "gitimport_content",
-            "scs",
-            "aosp_multi_repo_land",
-        ]
-    } else {
-        vec!["gitimport", "gitimport_content", "scs"]
-    }
-}
-
 /// Returns the tier list for a new repo as owned `String`s
 /// (matches the type used by `QuickRepoDefinition::config_tiers`).
-/// See `tier_list_for_repo_spec` for prefix-based behavior.
+/// See `repo_spec_writer::tier_list_for_repo_spec` for prefix-based behavior.
 fn tier_list_for_repo(repo_name: &str) -> Vec<String> {
     tier_list_for_repo_spec(repo_name)
         .into_iter()
@@ -658,112 +645,10 @@ fn to_repo_spec_tshirt_size(
     }
 }
 
-/// Returns the configerator path for a RepoSpec file (no source/ prefix, no .cconf extension).
-/// E.g., "scm/mononoke/repos/git/a3/org_repo" for repo name "org/repo".
-/// Must match repo_spec_config_path() in generate_repo_index.py and
-/// repo_spec_relative_path() in migrate_qrd_to_repo_spec.py.
-fn make_repo_spec_config_path(repo_name: &str) -> String {
-    // IMPORTANT: this hardcodes "repos/git/" because create_repos only supports GIT today.
-    // Must match repo_spec_config_path() for GIT in generate_repo_index.py. Hg repos use
-    // "repos/hg/{hash}/{name}" via the same hash-sharding scheme — branch on identity_scheme
-    // when adding HG support.
-    let hash = Sha256::digest(repo_name.as_bytes());
-    let hash_dir = format!("{:02x}", hash[0]);
-    format!(
-        "scm/mononoke/repos/git/{}/{}",
-        hash_dir,
-        repo_name.replace('/', "_")
-    )
-}
-
-/// Generates the file path for a RepoSpec file.
-/// Path format: source/scm/mononoke/repos/git/{hash_dir}/{repo_name_escaped}.cconf
-fn make_repo_spec_file_path(repo_name: &str) -> String {
-    // IMPORTANT: see make_repo_spec_config_path() above. Path is git-only today.
-    format!("source/{}.cconf", make_repo_spec_config_path(repo_name))
-}
-
-struct RepoIndexEntry {
-    config_path: String,
-    repo_id: i32,
-    tiers: Vec<&'static str>,
-    is_deep_sharded: bool,
-    t_shirt_size: TShirtSize,
-    hipster_acl: String,
-    enable_git_bundle_uri: Option<bool>,
-}
-
-fn format_python_bool(val: bool) -> &'static str {
-    if val { "True" } else { "False" }
-}
-
-fn format_python_list(items: &[&str]) -> String {
-    let quoted: Vec<String> = items.iter().map(|s| format!("\"{}\"", s)).collect();
-    format!("[{}]", quoted.join(", "))
-}
-
-fn format_tshirt_size_python(size: TShirtSize) -> &'static str {
-    match size {
-        TShirtSize::SMALL => "TShirtSize.SMALL",
-        TShirtSize::MEDIUM => "TShirtSize.MEDIUM",
-        TShirtSize::LARGE => "TShirtSize.LARGE",
-        TShirtSize::EXTRA_LARGE => "TShirtSize.EXTRA_LARGE",
-        TShirtSize::EXTRA_EXTRA_LARGE => "TShirtSize.EXTRA_EXTRA_LARGE",
-        TShirtSize::HUGE => "TShirtSize.HUGE",
-        other => panic!("unexpected TShirtSize variant: {:?}", other),
-    }
-}
-
-/// Escape a string for embedding in a Python string literal (double-quoted).
-/// Matches the escaping in generate_repo_index.py's ast_value_to_python_literal().
-fn escape_python_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn append_to_repo_index(
-    current_content: &str,
-    new_entries: &[(String, RepoIndexEntry)],
-) -> Result<String> {
-    let insert_pos = current_content
-        .rfind("\n}")
-        .ok_or_else(|| anyhow::anyhow!("malformed repo_index.cinc: no closing brace"))?;
-
-    let mut result = current_content[..insert_pos].to_string();
-
-    for (repo_name, entry) in new_entries {
-        let mut entry_str = format!(
-            r#"
-    "{}": {{
-        "config_path": "{}",
-        "repo_id": {},
-        "tiers": {},
-        "is_deep_sharded": {},
-        "t_shirt_size": {},
-        "default_commit_identity_scheme": RawCommitIdentityScheme.GIT,
-        "hipster_acl": "{}",
-        "enabled": True,
-        "readonly": False,"#,
-            escape_python_string(repo_name),
-            entry.config_path,
-            entry.repo_id,
-            format_python_list(&entry.tiers),
-            format_python_bool(entry.is_deep_sharded),
-            format_tshirt_size_python(entry.t_shirt_size),
-            escape_python_string(&entry.hipster_acl),
-        );
-        if let Some(bundle_uri) = entry.enable_git_bundle_uri {
-            entry_str.push_str(&format!(
-                "\n        \"enable_git_bundle_uri\": {},",
-                format_python_bool(bundle_uri)
-            ));
-        }
-        entry_str.push_str("\n    },");
-        result.push_str(&entry_str);
-    }
-
-    result.push_str("\n}\n");
-    Ok(result)
-}
+// RepoSpec path helpers, Python-literal formatters, RepoIndexEntry, and
+// append_to_repo_index live in `repo_spec_writer` so the Phase 6 RepoSpec
+// migrator can share the same byte-equivalent implementation. See
+// `eden/mononoke/tools/repo_spec_writer/src/lib.rs`.
 
 fn make_repo_spec(
     (repo_id, request): &(RepositoryId, thrift::RepoCreationRequest),

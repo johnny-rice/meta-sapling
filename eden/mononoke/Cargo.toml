@@ -455,6 +455,7 @@ members = [
   "tools/import",
   "tools/packer",
   "tools/repo_import",
+  "tools/repo_spec_writer",
   "tools/sqlblob_gc",
   "tools/streaming_clone",
   "tools/tail-to-cloudwatch",
