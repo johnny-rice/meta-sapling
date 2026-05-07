@@ -22,6 +22,7 @@ namespace facebook::eden {
  *
  * Platform-specific hooks:
  *   Linux:   __wrap___cxa_throw (via --wrap linker flag)
+ *   macOS:   __cxa_throw override (via dlsym RTLD_NEXT)
  */
 std::optional<std::string> getThrowSiteStackTrace();
 

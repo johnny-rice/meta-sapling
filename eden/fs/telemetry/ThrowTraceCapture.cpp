@@ -9,9 +9,13 @@
 
 #include <cstdlib>
 
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
+
 #include "eden/fs/rust/backtrace_ffi/src/lib.rs.h"
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 
 namespace {
 // Common: onThrow() captures a raw backtrace via Rust FFI.
@@ -22,6 +26,7 @@ void onThrow() {
 }
 } // namespace
 
+#if defined(__linux__)
 // Linux throw hook using the GNU linker's --wrap mechanism.
 //
 // When -Wl,--wrap=__cxa_throw is passed (via exported_linker_flags in BUCK),
@@ -46,7 +51,26 @@ __attribute__((__noreturn__)) void __wrap___cxa_throw(
 }
 } // extern "C"
 
-#endif // defined(__linux__)
+#elif defined(__APPLE__)
+// macOS: Override __cxa_throw, delegate to original via dlsym(RTLD_NEXT).
+
+using CxaThrowFn = void (*)(void*, void*, void (*)(void*));
+
+extern "C" __attribute__((__noreturn__)) void
+__cxa_throw(void* thrownException, void* type, void (*destructor)(void*)) {
+  onThrow();
+  static auto orig =
+      reinterpret_cast<CxaThrowFn>(dlsym(RTLD_NEXT, "__cxa_throw"));
+  if (!orig) {
+    std::abort();
+  }
+  orig(thrownException, type, destructor);
+  __builtin_unreachable();
+}
+
+#endif // platform hooks
+
+#endif // defined(__linux__) || defined(__APPLE__)
 
 namespace facebook::eden {
 
