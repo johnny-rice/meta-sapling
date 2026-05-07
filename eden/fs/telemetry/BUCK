@@ -148,11 +148,15 @@ cpp_library(
     headers = [
         "ThrowTraceCapture.h",
     ],
+    exported_linker_flags = select({
+        "DEFAULT": [],
+        "ovr_config//os:linux": [
+            "-Wl,--wrap=__cxa_throw",
+        ],
+    }),
     deps = [
-        "//folly/debugging/exception_tracer:exception_tracer_base",
-    ],
-    exported_deps = [
-        "//folly/debugging/exception_tracer:exception_tracer",  # @manual
+        "//eden/fs/rust/backtrace_ffi:backtrace-ffi",
+        "//eden/fs/rust/backtrace_ffi:backtrace-ffi@header",
     ],
 )
 

@@ -16,10 +16,12 @@ namespace facebook::eden {
  * Returns the throw-site stack trace for the current exception.
  * Must be called inside a catch block.
  *
- * Platform-specific implementations:
- *   Linux:   folly::exception_tracer (hooks __cxa_throw via --wrap)
- *   macOS:   Not yet implemented (returns std::nullopt)
- *   Windows: Not yet implemented (returns std::nullopt)
+ * Uses backtrace-rs via Rust FFI for cross-platform stack trace capture.
+ * Raw IP addresses are captured at throw time; symbolization is deferred
+ * until this function is called (lazy symbolization).
+ *
+ * Platform-specific hooks:
+ *   Linux:   __wrap___cxa_throw (via --wrap linker flag)
  */
 std::optional<std::string> getThrowSiteStackTrace();
 

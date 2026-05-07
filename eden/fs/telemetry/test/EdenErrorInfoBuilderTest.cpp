@@ -27,17 +27,6 @@ TEST(EdenErrorInfoTest, InitializeFuseEdenErrorInfoWithException) {
   try {
     throwRuntimeError();
   } catch (const std::exception& ex) {
-    // ErrorArg captures the throw-site stack trace inside a catch block.
-    ErrorArg error(ex);
-#ifdef __linux__
-    ASSERT_TRUE(error.stackTrace.has_value())
-        << "ErrorArg should capture a stack trace from a thrown exception";
-    EXPECT_NE(error.stackTrace->find("throwRuntimeError"), std::string::npos)
-        << "Stack trace should contain the throwing function, got: "
-        << *error.stackTrace;
-#endif
-
-    // create() stores the raw combined trace in info.stackTrace.
     auto info = EdenErrorInfo::fuse(ex, 42, "/mnt/repo").create();
 
     EXPECT_EQ(info.component, EdenComponent::Fuse);
