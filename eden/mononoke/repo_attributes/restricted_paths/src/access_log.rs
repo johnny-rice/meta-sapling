@@ -122,13 +122,6 @@ pub(crate) struct SourceRestrictionCheckResult {
     pub(crate) is_rollout_allowlisted: bool,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "implemented before Shadow dispatch wires production callers"
-    )
-)]
 impl SourceRestrictionCheckResult {
     pub(crate) fn new(
         has_authorization: bool,
@@ -254,13 +247,6 @@ pub async fn is_part_of_group(
 /// config-authoritative, while source disagreement is summarized with compact
 /// mismatch fields. If every available source completed unrestricted, no row
 /// is written.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "implemented before Shadow dispatch wires production callers"
-    )
-)]
 pub(crate) fn log_source_results_to_scuba(
     ctx: &CoreContext,
     repo_id: RepositoryId,

@@ -2052,16 +2052,26 @@ async fn test_shadow_path_dispatch_logs_config_and_acl_manifest_sources(
         .with_acl_manifest_mode(AclManifestMode::Shadow)
         .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
-        .with_acl_manifest_restricted_paths(vec![(restricted_root, restricted_acl)])
+        .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("restricted/dir/a", None)])
         .build(fb)
         .await?
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert the real path logger emits compact mismatch
-    // fields for Shadow mode.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.full_path() == Some(&restricted_root)
+                && log.acl_manifest_mode() == Some("shadow")
+                && !log.has_authorization()
+                && log.shadow_mismatch() == Some(false)
+                && log.shadow_mismatch_detail().is_none()
+                && log.considered_restricted_by()
+                    == ["acl_manifest".to_string(), "manifest_db".to_string()]
+        }),
+        "expected a Shadow path log with matching config and AclManifest sources: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2077,21 +2087,30 @@ async fn test_shadow_path_dispatch_logs_acl_manifest_only_restriction(
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
         .with_use_acl_manifest(false)
-        .with_acl_manifest_restricted_paths(vec![(restricted_root, restricted_acl)])
+        .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("acl_manifest_only/dir/a", None)])
         .build(fb)
         .await?
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert AclManifest-only restricted paths emit
-    // comparison rows while config remains authoritative.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.full_path() == Some(&restricted_root)
+                && log.has_authorization()
+                && log.shadow_mismatch() == Some(true)
+                && log.shadow_mismatch_detail().is_some()
+                && log.considered_restricted_by() == ["acl_manifest".to_string()]
+        }),
+        "expected an AclManifest-only Shadow comparison row: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
 // What it tests: Shadow path dispatch handles comparison-source lookup errors as logging-only data.
-// Expected: AclManifest errors populate acl_manifest_error without changing request success.
+// Expected: AclManifest errors populate acl_manifest_error and mark the row for investigation
+// without changing request success.
 #[mononoke::fbinit_test]
 async fn test_shadow_path_dispatch_logs_comparison_errors(fb: FacebookInit) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
@@ -2105,12 +2124,22 @@ async fn test_shadow_path_dispatch_logs_comparison_errors(fb: FacebookInit) -> R
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .build(fb)
         .await?
-        .observe_path_access(restricted_root, Some(missing_cs_id), &[])
+        .observe_path_access(restricted_root.clone(), Some(missing_cs_id), &[])
         .await?;
 
-    // TODO(T248660053): inject an AclManifest path lookup failure and assert
-    // it is logged without failing the request.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.full_path() == Some(&restricted_root)
+                && log.acl_manifest_mode() == Some("shadow")
+                && !log.has_authorization()
+                && log.acl_manifest_error().is_some()
+                && log.shadow_mismatch() == Some(true)
+                && log.shadow_mismatch_detail().is_some()
+                && log.considered_restricted_by() == ["manifest_db".to_string()]
+        }),
+        "expected Shadow path logging to capture AclManifest comparison errors: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2130,12 +2159,22 @@ async fn test_shadow_path_dispatch_skips_acl_manifest_without_changeset(
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .build(fb)
         .await?
-        .observe_path_access(restricted_root, None, &[])
+        .observe_path_access(restricted_root.clone(), None, &[])
         .await?;
 
-    // TODO(T248660053): call path access without a changeset id and assert
-    // AclManifest comparison is skipped.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.full_path() == Some(&restricted_root)
+                && log.acl_manifest_mode() == Some("shadow")
+                && !log.has_authorization()
+                && log.acl_manifest_error().is_none()
+                && log.shadow_mismatch() == Some(false)
+                && log.shadow_mismatch_detail().is_none()
+                && log.considered_restricted_by() == ["manifest_db".to_string()]
+        }),
+        "expected Shadow path logging to skip AclManifest without a changeset: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2152,8 +2191,10 @@ async fn test_shadow_path_dispatch_omits_unrestricted_rows(fb: FacebookInit) -> 
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert no Scuba rows are emitted when config and
-    // AclManifest both report unrestricted.
-    let _ = result;
+    assert!(
+        result.scuba_logs.is_empty(),
+        "expected no Shadow rows for unrestricted paths: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }

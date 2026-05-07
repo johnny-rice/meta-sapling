@@ -64,10 +64,6 @@ use tests_utils::CreateCommitContext;
 
 pub const TEST_CLIENT_MAIN_ID: &str = "user:myusername0";
 
-#[expect(
-    dead_code,
-    reason = "path dispatch assertions use returned Scuba rows in the next diff"
-)]
 pub struct RestrictedPathsScenarioResult {
     pub scuba_logs: Vec<ScubaAccessLogSample>,
 }
@@ -138,10 +134,6 @@ pub struct ScubaAccessLogSample {
     shadow_mismatch_detail: Option<String>,
 }
 
-#[expect(
-    dead_code,
-    reason = "path dispatch assertions use Scuba sample accessors in the next diff"
-)]
 impl ScubaAccessLogSample {
     pub fn full_path(&self) -> Option<&NonRootMPath> {
         self.full_path.as_ref()
