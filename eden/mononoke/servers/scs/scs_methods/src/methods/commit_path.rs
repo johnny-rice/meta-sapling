@@ -515,7 +515,28 @@ impl SourceControlServiceImpl {
             }
         )?;
 
-        let limit: usize = check_range_and_convert("limit", params.limit, 0..)?;
+        // Cap `limit` at COMMIT_PATH_HISTORY_MAX_LIMIT for most clients, but
+        // allow a JustKnob switchval-based allowlist of clients to bypass the
+        // cap. Some clients pass i32::MAX as a sentinel for "unlimited"; this
+        // gives them a glide path to migrate without breakage. Shared knob
+        // across history methods (commit_history, commit_path_history).
+        let client_main_id = ctx
+            .metadata()
+            .client_info()
+            .and_then(|ci| ci.request_info.as_ref())
+            .and_then(|cri| cri.main_id.as_deref());
+        let enforce_limit = justknobs::eval(
+            "scm/mononoke:scs_history_enforce_limit",
+            None,
+            client_main_id,
+        )
+        .map_err(scs_errors::internal_error)?;
+        let limit_max = if enforce_limit {
+            source_control::COMMIT_PATH_HISTORY_MAX_LIMIT
+        } else {
+            i32::MAX
+        };
+        let limit: usize = check_range_and_convert("limit", params.limit, 0..=limit_max)?;
         let skip: usize = check_range_and_convert("skip", params.skip, 0..)?;
 
         // Time filter equal to zero might be mistaken by users for an unset, like None.

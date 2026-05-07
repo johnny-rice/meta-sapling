@@ -1508,6 +1508,8 @@ struct CommitChangedPathsApproxResponse {
   1: set<string> paths;
 }
 
+const i32 COMMIT_HISTORY_MAX_LIMIT = 100000;
+
 /// Parameters for the `commit_history` method.
 ///
 /// By default, this will include all commits that are ancestors of
@@ -1743,6 +1745,8 @@ struct CommitPathBlameParams {
   /// using commit parents to identify ancestry
   5: optional bool follow_mutable_file_history;
 }
+
+const i32 COMMIT_PATH_HISTORY_MAX_LIMIT = 100000;
 
 /// Parameters for the `commit_path_history` method.
 ///
