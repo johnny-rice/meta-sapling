@@ -23,7 +23,7 @@ use mononoke_api::ChangesetId;
 use mononoke_app::args::ChangesetArgs;
 use mononoke_app::args::MultiDerivedDataArgs;
 use mononoke_types::DerivableType;
-use tracing::trace;
+use tracing::debug;
 
 use super::Repo;
 
@@ -63,7 +63,7 @@ pub(super) async fn derive(
         .resolve_types(manager.config())?;
 
     let rederivation = if args.rederive {
-        trace!("about to rederive {} commits", csids.len());
+        debug!("about to rederive {} commits", csids.len());
         // Force this binary to write to all blobstores
         ctx.session_mut()
             .override_session_class(SessionClass::Background);
@@ -75,7 +75,7 @@ pub(super) async fn derive(
                 .collect::<HashSet<_>>(),
         ))
     } else {
-        trace!("about to derive {} commits", csids.len());
+        debug!("about to derive {} commits", csids.len());
         Default::default()
     };
 
@@ -83,7 +83,7 @@ pub(super) async fn derive(
         for derived_data_type in &derived_data_types {
             let variant = derived_data_type.into_pipeline_derivable_variant()?;
 
-            trace!(
+            debug!(
                 "about to derive stage {} of {} for {} commits",
                 stage_id,
                 derived_data_type.name(),
@@ -93,7 +93,7 @@ pub(super) async fn derive(
             let duration =
                 derive_stage_batch(manager, ctx, csids.to_vec(), &stage_id, variant).await?;
 
-            println!(
+            debug!(
                 "Stage {} derivation for {} completed in {}ms",
                 stage_id,
                 derived_data_type.name(),
@@ -124,7 +124,7 @@ pub(super) async fn derive(
             )
             .try_timed()
             .await?;
-        trace!(
+        debug!(
             "finished derivation in {}ms",
             stats.completion_time.as_millis(),
         );
@@ -140,7 +140,7 @@ async fn unsafe_derive_untopologically(
     csid: ChangesetId,
     rederivation: Arc<dyn Rederivation>,
 ) -> Result<()> {
-    trace!("deriving {} from predecessors", csid);
+    debug!("deriving {} from predecessors", csid);
     let (stats, res) = BulkDerivation::unsafe_derive_untopologically(
         manager,
         ctx,
@@ -150,7 +150,7 @@ async fn unsafe_derive_untopologically(
     )
     .try_timed()
     .await?;
-    trace!(
+    debug!(
         "derived {} for {} in {}ms, {:?}",
         derived_data_type.name(),
         csid,
