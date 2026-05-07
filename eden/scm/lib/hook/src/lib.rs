@@ -12,6 +12,8 @@ use std::process::ExitStatus;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use configmodel::Config;
 use configmodel::ConfigExt;
 use erased_serde::Serialize;
@@ -38,8 +40,17 @@ impl Hook {
 
 #[derive(Debug, PartialEq)]
 enum HookSpec {
-    Shell { script: Text, background: bool },
+    Shell {
+        script: ShellScript,
+        background: bool,
+    },
     Python(Text),
+}
+
+#[derive(Debug, PartialEq)]
+enum ShellScript {
+    Plain(Text),
+    Base64(Text),
 }
 
 pub struct Hooks {
@@ -139,9 +150,17 @@ impl Hooks {
 
             let maybe_error_description = match &h.spec {
                 HookSpec::Shell {
-                    script: shell_cmd,
+                    script: shell_script,
                     background,
                 } => 'shell_hook: {
+                    let decoded_shell_cmd;
+                    let shell_cmd = match shell_script {
+                        ShellScript::Plain(shell_cmd) => shell_cmd.as_ref(),
+                        ShellScript::Base64(shell_cmd) => {
+                            decoded_shell_cmd = decode_shell_script(shell_cmd)?;
+                            decoded_shell_cmd.as_str()
+                        }
+                    };
                     let mut cmd = Command::new_shell(shell_cmd);
 
                     if let Some(repo) = repo {
@@ -235,6 +254,13 @@ impl Hooks {
     }
 }
 
+fn decode_shell_script(script: &Text) -> Result<String> {
+    let script = BASE64
+        .decode(script.as_ref())
+        .context("decoding base64 shell hook")?;
+    String::from_utf8(script).context("decoding base64 shell hook as UTF-8")
+}
+
 /// Converts a `dyn Serialize` to env vars used by shell hooks.
 fn to_env_vars(
     kwargs: &dyn Serialize,
@@ -289,6 +315,7 @@ fn exit_description(status: &ExitStatus) -> String {
 
 const PY_PREFIX: &str = "python:";
 const BG_PREFIX: &str = "background:";
+const BASE64_PREFIX: &str = "base64:";
 
 impl HookSpec {
     fn from_text(value: Text) -> Self {
@@ -296,14 +323,23 @@ impl HookSpec {
             HookSpec::Python(value.slice(PY_PREFIX.len()..))
         } else if value.starts_with(BG_PREFIX) {
             HookSpec::Shell {
-                script: value.slice(BG_PREFIX.len()..),
+                script: ShellScript::from_text(value.slice(BG_PREFIX.len()..)),
                 background: true,
             }
         } else {
             HookSpec::Shell {
-                script: value,
+                script: ShellScript::from_text(value),
                 background: false,
             }
+        }
+    }
+}
+
+impl ShellScript {
+    fn from_text(value: Text) -> Self {
+        match value.starts_with(BASE64_PREFIX) {
+            true => ShellScript::Base64(value.slice(BASE64_PREFIX.len()..)),
+            false => ShellScript::Plain(value),
         }
     }
 }
@@ -368,6 +404,8 @@ mod test {
         let cfg = BTreeMap::from([
             ("hooks.foo", "echo ok"),
             ("hooks.foo.bar", "background:touch foo"),
+            ("hooks.foo.base64", "base64:ZWNobyBpbmxpbmU="),
+            ("hooks.foo.bgbase64", "background:base64:dG91Y2ggZm9v"),
             ("hooks.foo.baz.qux", "python:foo.py"),
             ("hooks.priority.foo.baz.qux", "1"),
             ("hooks.foobar", "echo no"),
@@ -375,7 +413,7 @@ mod test {
 
         let hooks = hooks_from_config(&cfg, "foo");
 
-        assert_eq!(hooks.len(), 3);
+        assert_eq!(hooks.len(), 5);
 
         assert_eq!(hooks[0].name, "foo.baz.qux");
         assert_eq!(hooks[0].spec, HookSpec::Python("foo.py".into()));
@@ -384,7 +422,7 @@ mod test {
         assert_eq!(
             hooks[1].spec,
             HookSpec::Shell {
-                script: "echo ok".into(),
+                script: ShellScript::Plain("echo ok".into()),
                 background: false,
             }
         );
@@ -393,7 +431,25 @@ mod test {
         assert_eq!(
             hooks[2].spec,
             HookSpec::Shell {
-                script: "touch foo".into(),
+                script: ShellScript::Plain("touch foo".into()),
+                background: true,
+            }
+        );
+
+        assert_eq!(hooks[3].name, "foo.base64");
+        assert_eq!(
+            hooks[3].spec,
+            HookSpec::Shell {
+                script: ShellScript::Base64("ZWNobyBpbmxpbmU=".into()),
+                background: false,
+            }
+        );
+
+        assert_eq!(hooks[4].name, "foo.bgbase64");
+        assert_eq!(
+            hooks[4].spec,
+            HookSpec::Shell {
+                script: ShellScript::Base64("dG91Y2ggZm9v".into()),
                 background: true,
             }
         );
@@ -420,6 +476,13 @@ mod test {
         hooks.ignore("python:foo.py");
         assert!(hooks.run_hooks(None, true, None).is_ok());
         assert!(String::from_utf8(output.to_vec())?.starts_with("ok"));
+
+        let cfg = BTreeMap::from([("hooks.foo.shell", "base64:ZWNobyBpbmxpbmU=")]);
+        let output = BufIO::empty();
+        let io = IO::new(BufIO::dev_null(), output.clone(), None::<BufIO>);
+        let hooks = Hooks::from_config(&cfg, &io, "foo");
+        assert!(hooks.run_hooks(None, true, None).is_ok());
+        assert!(String::from_utf8(output.to_vec())?.starts_with("inline"));
 
         // Now with an erroring hook propagating error:
 
