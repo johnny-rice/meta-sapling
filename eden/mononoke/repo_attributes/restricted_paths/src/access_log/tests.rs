@@ -33,7 +33,7 @@ struct ShadowComparisonFieldFixture {
     ctx: CoreContext,
     repo_id: RepositoryId,
     acl_manifest_mode: AclManifestMode,
-    config_result: Option<SourceRestrictionResult>,
+    config_result: SourceRestrictionResult,
     acl_manifest_result: Option<SourceRestrictionResult>,
     access_data: RestrictedPathAccessData,
     scuba: MononokeScubaSampleBuilder,
@@ -43,7 +43,7 @@ struct ShadowComparisonFieldFixture {
 impl ShadowComparisonFieldFixture {
     fn new(
         fb: FacebookInit,
-        config_result: Option<SourceRestrictionResult>,
+        config_result: SourceRestrictionResult,
         acl_manifest_result: Option<SourceRestrictionResult>,
         access_data: RestrictedPathAccessData,
     ) -> Result<Self> {
@@ -68,13 +68,30 @@ impl ShadowComparisonFieldFixture {
         log_results: impl FnOnce(
             &CoreContext,
             RepositoryId,
-            Option<&SourceRestrictionResult>,
+            &SourceRestrictionResult,
             Option<&SourceRestrictionResult>,
             AclManifestMode,
             RestrictedPathAccessData,
             MononokeScubaSampleBuilder,
         ) -> Result<()>,
     ) -> Result<Vec<serde_json::Map<String, Value>>> {
+        let (log_result, samples) = self.log_with_result(log_results)?;
+        log_result?;
+        Ok(samples)
+    }
+
+    fn log_with_result(
+        self,
+        log_results: impl FnOnce(
+            &CoreContext,
+            RepositoryId,
+            &SourceRestrictionResult,
+            Option<&SourceRestrictionResult>,
+            AclManifestMode,
+            RestrictedPathAccessData,
+            MononokeScubaSampleBuilder,
+        ) -> Result<()>,
+    ) -> Result<(Result<()>, Vec<serde_json::Map<String, Value>>)> {
         let Self {
             ctx,
             repo_id,
@@ -86,16 +103,17 @@ impl ShadowComparisonFieldFixture {
             log_path,
         } = self;
 
-        log_results(
+        let log_result = log_results(
             &ctx,
             repo_id,
-            config_result.as_ref(),
+            &config_result,
             acl_manifest_result.as_ref(),
             acl_manifest_mode,
             access_data,
             scuba,
-        )?;
-        read_logged_samples(&log_path)
+        );
+        let samples = read_logged_samples(&log_path)?;
+        Ok((log_result, samples))
     }
 }
 
@@ -106,12 +124,7 @@ impl ShadowComparisonFieldFixture {
 async fn test_shadow_mismatch_summary_fields_are_logged(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(restricted_result(
-            false,
-            false,
-            "config_acl",
-            Some("config/restricted"),
-        )?),
+        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
         Some(restricted_result(
             true,
             true,
@@ -175,12 +188,7 @@ async fn test_shadow_matching_restricted_sources_log_row_without_mismatch(
 ) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(restricted_result(
-            false,
-            false,
-            "shared_acl",
-            Some("shared/restricted"),
-        )?),
+        restricted_result(false, false, "shared_acl", Some("shared/restricted"))?,
         Some(restricted_result(
             false,
             false,
@@ -222,12 +230,7 @@ async fn test_shadow_root_only_differences_do_not_set_shadow_mismatch(
 ) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(restricted_result(
-            false,
-            false,
-            "shared_acl",
-            Some("config/restricted"),
-        )?),
+        restricted_result(false, false, "shared_acl", Some("config/restricted"))?,
         Some(restricted_result(false, false, "shared_acl", None)?),
         manifest_access_data(ManifestType::HgAugmented),
     )?
@@ -253,12 +256,7 @@ async fn test_shadow_root_only_differences_do_not_set_shadow_mismatch(
 async fn test_shadow_aggregate_fields_stay_config_authoritative(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(restricted_result(
-            false,
-            false,
-            "config_acl",
-            Some("config/restricted"),
-        )?),
+        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
         Some(unrestricted_result(Some(vec![]))),
         manifest_access_data(ManifestType::HgAugmented),
     )?
@@ -314,7 +312,7 @@ async fn test_shadow_aggregate_fields_stay_config_authoritative(fb: FacebookInit
 async fn test_shadow_comparison_errors_are_logged(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(unrestricted_result(Some(vec![]))),
+        unrestricted_result(Some(vec![])),
         Some(error_result("acl manifest lookup failed")),
         full_path_access_data()?,
     )?
@@ -349,22 +347,32 @@ async fn test_shadow_comparison_errors_are_logged(fb: FacebookInit) -> Result<()
     Ok(())
 }
 
-// What it tests: Shadow emits error-only rows when both sources fail.
-// Expected: both source-specific error fields and mismatch summary are present
-// without top-level aggregate authorization fields.
+// What it tests: Shadow logs config errors before bubbling them up to the
+// caller.
+// Expected: the config error is returned, and the error-only comparison row is
+// emitted without aggregate authorization fields.
 #[mononoke::fbinit_test]
-async fn test_shadow_error_only_rows_are_logged(fb: FacebookInit) -> Result<()> {
-    let samples = ShadowComparisonFieldFixture::new(
+async fn test_shadow_config_errors_are_returned(fb: FacebookInit) -> Result<()> {
+    let (log_result, samples) = ShadowComparisonFieldFixture::new(
         fb,
-        Some(error_result("config lookup failed")),
+        error_result("config lookup failed"),
         Some(error_result("acl manifest lookup failed")),
         full_path_access_data()?,
     )?
-    .log_with(log_source_results_to_scuba)?;
+    .log_with_result(log_source_results_to_scuba)?;
 
+    let err = match log_result {
+        Ok(()) => {
+            return Err(anyhow!(
+                "expected config error, logged samples: {samples:?}"
+            ));
+        }
+        Err(err) => err,
+    };
+
+    assert!(format!("{:#}", err).contains("config lookup failed"));
     assert_eq!(samples.len(), 1);
     let sample = &samples[0];
-    assert_eq!(sample_field(sample, "has_authorization"), None);
     assert!(
         sample_field(sample, "config_error")
             .is_some_and(|value| value.contains("config lookup failed"))
@@ -372,6 +380,13 @@ async fn test_shadow_error_only_rows_are_logged(fb: FacebookInit) -> Result<()> 
     assert!(
         sample_field(sample, "acl_manifest_error")
             .is_some_and(|value| value.contains("acl manifest lookup failed"))
+    );
+    assert_eq!(sample_field(sample, "has_authorization"), None);
+    assert_eq!(sample_field(sample, "has_acl_access"), None);
+    assert_eq!(sample_field(sample, "acls"), None);
+    assert_eq!(
+        sample_array(sample, "considered_restricted_by"),
+        Vec::<String>::new()
     );
     assert_eq!(
         sample_field(sample, "shadow_mismatch"),
@@ -382,6 +397,11 @@ async fn test_shadow_error_only_rows_are_logged(fb: FacebookInit) -> Result<()> 
     assert_eq!(
         detail["differences"],
         json!(["config_error", "acl_manifest_error"])
+    );
+    assert_eq!(detail["config"]["error"], json!("config lookup failed"));
+    assert_eq!(
+        detail["acl_manifest"]["error"],
+        json!("acl manifest lookup failed")
     );
     Ok(())
 }
@@ -394,12 +414,7 @@ async fn test_shadow_error_only_rows_are_logged(fb: FacebookInit) -> Result<()> 
 async fn test_shadow_skipped_comparison_source_is_not_logged(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(restricted_result(
-            false,
-            false,
-            "config_acl",
-            Some("config/restricted"),
-        )?),
+        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
         None,
         manifest_access_data(ManifestType::Hg),
     )?
@@ -426,7 +441,7 @@ async fn test_shadow_skipped_comparison_source_is_not_logged(fb: FacebookInit) -
 async fn test_shadow_unrestricted_sources_do_not_log_rows(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        Some(unrestricted_result(Some(vec![]))),
+        unrestricted_result(Some(vec![])),
         Some(unrestricted_result(Some(vec![]))),
         full_path_access_data()?,
     )?

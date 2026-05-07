@@ -74,10 +74,6 @@ struct RestrictedPathAggregateLogData<'a> {
 }
 
 /// Complete Scuba row payload for restricted-path access logging.
-///
-/// `aggregate` is optional in this no-op refactor because Shadow source
-/// comparison still emits error-only rows when config fails. The follow-up
-/// behavior diff can make it required after those rows stop being logged.
 struct RestrictedPathLogData<'a> {
     repo_id: RepositoryId,
     access_data: RestrictedPathAccessData,
@@ -256,8 +252,8 @@ pub async fn is_part_of_group(
 /// This emits one row when a Shadow-mode lookup source either finds a
 /// restriction or fails. Aggregate authorization fields remain
 /// config-authoritative, while source disagreement is summarized with compact
-/// mismatch fields. If neither source ran, or every source that ran completed
-/// unrestricted, no row is written.
+/// mismatch fields. If every available source completed unrestricted, no row
+/// is written.
 #[cfg_attr(
     not(test),
     expect(
@@ -268,7 +264,7 @@ pub async fn is_part_of_group(
 pub(crate) fn log_source_results_to_scuba(
     ctx: &CoreContext,
     repo_id: RepositoryId,
-    config_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult,
     acl_manifest_result: Option<&SourceRestrictionResult>,
     acl_manifest_mode: AclManifestMode,
     access_data: RestrictedPathAccessData,
@@ -285,19 +281,19 @@ pub(crate) fn log_source_results_to_scuba(
         RestrictedPathLogData {
             repo_id,
             access_data,
-            aggregate: config_result.and_then(|result| {
-                let result = result.as_ref().ok()?;
-                Some(RestrictedPathAggregateLogData {
-                    restricted_paths: result.restriction_paths.as_deref(),
+            aggregate: config_result
+                .as_ref()
+                .ok()
+                .map(|config| RestrictedPathAggregateLogData {
+                    restricted_paths: config.restriction_paths.as_deref(),
                     authorization: LoggedAuthorization {
-                        has_authorization: result.has_authorization,
-                        is_allowlisted_tooling: result.is_allowlisted_tooling,
-                        is_rollout_allowlisted: result.is_rollout_allowlisted,
-                        has_acl_access: result.has_acl_access,
+                        has_authorization: config.has_authorization,
+                        is_allowlisted_tooling: config.is_allowlisted_tooling,
+                        is_rollout_allowlisted: config.is_rollout_allowlisted,
+                        has_acl_access: config.has_acl_access,
                     },
-                    acls: result.restriction_acls.iter().collect(),
-                })
-            }),
+                    acls: config.restriction_acls.iter().collect(),
+                }),
             considered_restricted_by: considered_restricted_by_for_source_results(
                 config_result,
                 acl_manifest_result,
@@ -305,7 +301,12 @@ pub(crate) fn log_source_results_to_scuba(
             source_comparison: Some(source_comparison),
         },
         scuba,
-    )
+    )?;
+
+    config_result
+        .as_ref()
+        .map(|_| ())
+        .map_err(|err| anyhow::anyhow!("{:#}", err))
 }
 
 /// Build the source-comparison fields for rows that need Shadow telemetry.
@@ -313,24 +314,27 @@ pub(crate) fn log_source_results_to_scuba(
 /// Returns `None` when every source that ran completed unrestricted, matching
 /// the old behavior of skipping those rows entirely.
 fn source_comparison_log_context(
-    config_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult,
     acl_manifest_result: Option<&SourceRestrictionResult>,
     acl_manifest_mode: AclManifestMode,
 ) -> Option<SourceComparisonLogContext> {
     let any_source_restricted =
-        is_source_restricted(config_result) || is_source_restricted(acl_manifest_result);
-    let any_source_failed = is_source_error(config_result) || is_source_error(acl_manifest_result);
+        is_source_restricted(Some(config_result)) || is_source_restricted(acl_manifest_result);
+    let any_source_failed =
+        is_source_error(Some(config_result)) || is_source_error(acl_manifest_result);
     if !any_source_restricted && !any_source_failed {
         return None;
     }
 
     Some(SourceComparisonLogContext {
         acl_manifest_mode,
-        config_error: config_result
-            .and_then(|result| result.as_ref().err().map(|err| format!("{:#}", err))),
+        config_error: config_result.as_ref().err().map(|err| format!("{:#}", err)),
         acl_manifest_error: acl_manifest_result
             .and_then(|result| result.as_ref().err().map(|err| format!("{:#}", err))),
-        shadow_mismatch: shadow_mismatch_for_source_results(config_result, acl_manifest_result),
+        shadow_mismatch: shadow_mismatch_for_source_results(
+            Some(config_result),
+            acl_manifest_result,
+        ),
         shadow_mismatch_detail: shadow_mismatch_detail_for_source_results(
             config_result,
             acl_manifest_result,
@@ -339,17 +343,17 @@ fn source_comparison_log_context(
 }
 
 fn considered_restricted_by_for_source_results(
-    config_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult,
     acl_manifest_result: Option<&SourceRestrictionResult>,
 ) -> Vec<String> {
-    [
-        (SourceKind::Config, config_result),
-        (SourceKind::AclManifest, acl_manifest_result),
-    ]
-    .into_iter()
-    .filter(|&(_, result)| is_source_restricted(result))
-    .map(|(source, _)| source.as_scuba_value().to_string())
-    .collect()
+    let mut restricted_sources = Vec::new();
+    if is_source_restricted(Some(config_result)) {
+        restricted_sources.push(SourceKind::Config.as_scuba_value().to_string());
+    }
+    if is_source_restricted(acl_manifest_result) {
+        restricted_sources.push(SourceKind::AclManifest.as_scuba_value().to_string());
+    }
+    restricted_sources
 }
 
 fn is_source_restricted(result: Option<&SourceRestrictionResult>) -> bool {
@@ -361,7 +365,7 @@ fn is_source_error(result: Option<&SourceRestrictionResult>) -> bool {
 }
 
 fn shadow_mismatch_detail_for_source_results(
-    config_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult,
     acl_manifest_result: Option<&SourceRestrictionResult>,
 ) -> Option<String> {
     let differences = shadow_mismatch_differences(config_result, acl_manifest_result);
@@ -370,7 +374,7 @@ fn shadow_mismatch_detail_for_source_results(
     }
 
     let mut detail = serde_json::Map::new();
-    if let Some(config_detail) = source_result_detail(config_result) {
+    if let Some(config_detail) = source_result_detail(Some(config_result)) {
         detail.insert("config".to_string(), config_detail);
     }
     if let Some(acl_manifest_detail) = source_result_detail(acl_manifest_result) {
@@ -407,8 +411,8 @@ fn shadow_mismatch_for_source_results(
         return true;
     }
 
-    successful_source_comparison(config_result)
-        .zip(successful_source_comparison(acl_manifest_result))
+    successful_source_result_comparison(config_result)
+        .zip(successful_source_result_comparison(acl_manifest_result))
         .is_some_and(|(config, acl_manifest)| {
             restriction_comparison(config) != restriction_comparison(acl_manifest)
         })
@@ -419,21 +423,17 @@ fn source_error_status(result: Option<&SourceRestrictionResult>) -> Option<bool>
 }
 
 fn shadow_mismatch_differences(
-    config_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult,
     acl_manifest_result: Option<&SourceRestrictionResult>,
 ) -> Vec<&'static str> {
     let error_differences = [
-        (SourceKind::Config, config_result),
-        (SourceKind::AclManifest, acl_manifest_result),
-    ]
-    .into_iter()
-    .filter_map(|(source_kind, result)| {
-        is_source_error(result).then_some(source_kind.error_field())
-    });
+        is_source_error(Some(config_result)).then_some(SourceKind::Config.error_field()),
+        is_source_error(acl_manifest_result).then_some(SourceKind::AclManifest.error_field()),
+    ];
 
     let successful_source_differences = match (
-        successful_source_comparison(config_result),
-        successful_source_comparison(acl_manifest_result),
+        successful_source_result_comparison(Some(config_result)),
+        successful_source_result_comparison(acl_manifest_result),
     ) {
         (Some(config), Some(acl_manifest)) => [
             (config.restricted != acl_manifest.restricted, "restricted"),
@@ -457,35 +457,45 @@ fn shadow_mismatch_differences(
     };
 
     error_differences
+        .into_iter()
+        .flatten()
         .chain(successful_source_differences)
         .collect()
 }
 
 fn source_result_detail(result: Option<&SourceRestrictionResult>) -> Option<Value> {
     match result? {
-        Ok(result) => Some(json!({
-            "restricted": result.is_restricted(),
-            "has_authorization": result.has_authorization,
-            "restriction_acls": sorted_acls_to_strings(&result.restriction_acls),
-            "restriction_paths": result
-                .restriction_paths
-                .as_deref()
-                .map(sorted_paths_to_strings),
-        })),
+        Ok(result) => Some(successful_source_detail(result)),
         Err(err) => Some(json!({
             "error": format!("{:#}", err),
         })),
     }
 }
 
-fn successful_source_comparison(
+fn successful_source_detail(result: &SourceRestrictionCheckResult) -> Value {
+    json!({
+        "restricted": result.is_restricted(),
+        "has_authorization": result.has_authorization,
+        "restriction_acls": sorted_acls_to_strings(&result.restriction_acls),
+        "restriction_paths": result
+            .restriction_paths
+            .as_deref()
+            .map(sorted_paths_to_strings),
+    })
+}
+
+fn successful_source_result_comparison(
     result: Option<&SourceRestrictionResult>,
 ) -> Option<SourceComparisonData> {
     let result = match result? {
         Ok(result) => result,
         Err(_) => return None,
     };
-    Some(SourceComparisonData {
+    Some(successful_source_comparison(result))
+}
+
+fn successful_source_comparison(result: &SourceRestrictionCheckResult) -> SourceComparisonData {
+    SourceComparisonData {
         restricted: result.is_restricted(),
         has_authorization: result.has_authorization,
         restriction_acls: sorted_acls_to_strings(&result.restriction_acls),
@@ -493,7 +503,7 @@ fn successful_source_comparison(
             .restriction_paths
             .as_deref()
             .map(sorted_paths_to_strings),
-    })
+    }
 }
 
 fn acls_to_strings(acls: &[MononokeIdentity]) -> Vec<String> {
@@ -786,17 +796,18 @@ fn log_checked_access_to_restricted_path(
     // Override sampling for unauthorized SCSC accesses to restricted paths
     #[cfg(fbcode_build)]
     {
-        if let Some(aggregate) = log_data.aggregate.as_ref() {
-            use clientinfo::ClientEntryPoint;
+        use clientinfo::ClientEntryPoint;
 
-            let is_scsc = ctx
-                .metadata()
-                .client_request_info()
-                .is_some_and(|cri| cri.entry_point == ClientEntryPoint::ScsClient);
+        let is_scsc = ctx
+            .metadata()
+            .client_request_info()
+            .is_some_and(|cri| cri.entry_point == ClientEntryPoint::ScsClient);
 
-            if is_scsc && !aggregate.authorization.has_authorization {
-                ctx.set_override_sampling();
-            }
+        if let Some(aggregate) = log_data.aggregate.as_ref()
+            && is_scsc
+            && !aggregate.authorization.has_authorization
+        {
+            ctx.set_override_sampling();
         }
     }
 
@@ -804,26 +815,26 @@ fn log_checked_access_to_restricted_path(
     // Only available in fbcode builds
     #[cfg(fbcode_build)]
     {
-        if let Some(aggregate) = log_data.aggregate.as_ref() {
-            let use_schematized_logger = justknobs::eval(
-                "scm/mononoke:restricted_paths_use_schematized_logger",
-                None,
-                None,
-            )?;
+        let use_schematized_logger = justknobs::eval(
+            "scm/mononoke:restricted_paths_use_schematized_logger",
+            None,
+            None,
+        )?;
 
-            if use_schematized_logger {
-                if let Err(e) = schematized_logger::log_access_to_schematized_logger(
-                    ctx,
-                    log_data.repo_id,
-                    aggregate.restricted_paths.unwrap_or(&[]),
-                    &log_data.access_data,
-                    aggregate.authorization.has_authorization,
-                    aggregate.authorization.is_allowlisted_tooling,
-                    aggregate.authorization.is_rollout_allowlisted,
-                    &aggregate.acls,
-                ) {
-                    tracing::error!("Failed to log to schematized logger: {:?}", e);
-                }
+        if let Some(aggregate) = log_data.aggregate.as_ref()
+            && use_schematized_logger
+        {
+            if let Err(e) = schematized_logger::log_access_to_schematized_logger(
+                ctx,
+                log_data.repo_id,
+                aggregate.restricted_paths.unwrap_or(&[]),
+                &log_data.access_data,
+                aggregate.authorization.has_authorization,
+                aggregate.authorization.is_allowlisted_tooling,
+                aggregate.authorization.is_rollout_allowlisted,
+                &aggregate.acls,
+            ) {
+                tracing::error!("Failed to log to schematized logger: {:?}", e);
             }
         }
     }
