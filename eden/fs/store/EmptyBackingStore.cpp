@@ -86,6 +86,13 @@ SemiFuture<BackingStore::GetBlobAuxResult> EmptyBackingStore::getBlobAuxData(
       std::domain_error("empty backing store"));
 }
 
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+EmptyBackingStore::co_getBlobAuxData(
+    const ObjectId& /* id */,
+    const ObjectFetchContextPtr& /* context */) {
+  co_yield folly::coro::co_error(std::domain_error("empty backing store"));
+}
+
 ImmediateFuture<BackingStore::GetGlobFilesResult>
 EmptyBackingStore::getGlobFiles(
     const RootId& /* id */,
