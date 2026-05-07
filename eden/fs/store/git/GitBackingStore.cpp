@@ -291,6 +291,14 @@ GitBackingStore::getBlobAuxData(const ObjectId&, const ObjectFetchContextPtr&) {
       nullptr, ObjectFetchContext::Origin::NotFetched};
 }
 
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+GitBackingStore::co_getBlobAuxData(
+    const ObjectId& id,
+    const ObjectFetchContextPtr& context) {
+  co_return BackingStore::GetBlobAuxResult{
+      nullptr, ObjectFetchContext::Origin::NotFetched};
+}
+
 ImmediateFuture<BackingStore::GetGlobFilesResult> GitBackingStore::getGlobFiles(
     const RootId& /* id */,
     const std::vector<std::string>& /* globs */,

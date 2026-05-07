@@ -84,6 +84,9 @@ class GitBackingStore final : public BijectiveBackingStore {
   folly::SemiFuture<BackingStore::GetBlobAuxResult> getBlobAuxData(
       const ObjectId& id,
       const ObjectFetchContextPtr& context) override;
+  folly::coro::now_task<BackingStore::GetBlobAuxResult> co_getBlobAuxData(
+      const ObjectId& id,
+      const ObjectFetchContextPtr& context);
   ImmediateFuture<GetGlobFilesResult> getGlobFiles(
       const RootId& id,
       const std::vector<std::string>& globs,
