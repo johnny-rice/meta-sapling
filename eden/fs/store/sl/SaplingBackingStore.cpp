@@ -1613,6 +1613,31 @@ SaplingBackingStore::getBlobAuxData(
       .semi();
 }
 
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+SaplingBackingStore::co_getBlobAuxData(
+    const ObjectId& id,
+    const ObjectFetchContextPtr& context) {
+  DurationScope<EdenStats> scope{
+      stats_, &SaplingBackingStoreStats::getBlobAuxData};
+
+  SlOidView slOid{id};
+
+  logBackingStoreFetch(
+      *context,
+      folly::Range{&slOid, 1},
+      ObjectFetchContext::ObjectType::BlobAuxData);
+
+  auto auxData = getLocalBlobAuxData(slOid);
+  if (auxData.hasValue() && auxData.value()) {
+    stats_->increment(&SaplingBackingStoreStats::fetchBlobAuxDataSuccess);
+    stats_->increment(&SaplingBackingStoreStats::fetchBlobAuxDataLocal);
+    co_return GetBlobAuxResult{
+        std::move(auxData.value()), ObjectFetchContext::Origin::FromDiskCache};
+  }
+
+  co_return co_await getBlobAuxDataEnqueue(slOid, context).semi();
+}
+
 ImmediateFuture<BackingStore::GetBlobAuxResult>
 SaplingBackingStore::getBlobAuxDataEnqueue(
     const SlOid& slOid,
