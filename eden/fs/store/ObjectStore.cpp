@@ -797,7 +797,7 @@ ObjectStore::co_getBlobAuxDataImpl(
     const ObjectFetchContextPtr& context,
     folly::stop_watch<std::chrono::milliseconds> watch) const {
   auto resultTry = co_await folly::coro::co_awaitTry(
-      ImmediateFuture{backingStore_->getBlobAuxData(id, context)}.semi());
+      backingStore_->co_getBlobAuxData(id, context));
   if (resultTry.hasException()) {
     stats_->increment(&ObjectStoreStats::getBlobAuxDataFailed);
     XLOGF(DBG4, "unable to find aux data for {}", id);

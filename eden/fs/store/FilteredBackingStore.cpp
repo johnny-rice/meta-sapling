@@ -550,11 +550,11 @@ FilteredBackingStore::co_getBlobAuxData(
     const ObjectId& id,
     const ObjectFetchContextPtr& context) {
   if (isSlOid(id)) {
-    co_return co_await backingStore_->getBlobAuxData(id, context);
+    co_return co_await backingStore_->co_getBlobAuxData(id, context);
   }
 
   auto filteredId = FilteredObjectId::fromObjectId(id);
-  co_return co_await backingStore_->getBlobAuxData(
+  co_return co_await backingStore_->co_getBlobAuxData(
       filteredId.object(), context);
 }
 

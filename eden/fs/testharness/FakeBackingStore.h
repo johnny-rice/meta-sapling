@@ -253,7 +253,7 @@ class FakeBackingStore final : public BackingStore {
       const ObjectFetchContextPtr& context) override;
   folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxData(
       const ObjectId& id,
-      const ObjectFetchContextPtr& context);
+      const ObjectFetchContextPtr& context) override;
   ImmediateFuture<GetGlobFilesResult> getGlobFiles(
       const RootId& id,
       const std::vector<std::string>& globs,

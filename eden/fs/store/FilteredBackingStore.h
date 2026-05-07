@@ -190,7 +190,7 @@ class FilteredBackingStore
 
   folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxData(
       const ObjectId& id,
-      const ObjectFetchContextPtr& context);
+      const ObjectFetchContextPtr& context) override;
 
   [[nodiscard]] folly::SemiFuture<folly::Unit> prefetchBlobs(
       ObjectIdRange ids,

@@ -295,6 +295,10 @@ class BackingStore : public RootIdCodec, public ObjectIdCodec {
       const ObjectId& id,
       const ObjectFetchContextPtr& context) = 0;
 
+  virtual folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxData(
+      const ObjectId& id,
+      const ObjectFetchContextPtr& context) = 0;
+
   /**
    * Fetch file paths matching the given glob suffixes
    *

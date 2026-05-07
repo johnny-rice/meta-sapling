@@ -568,7 +568,7 @@ class SaplingBackingStore final
 
   folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxData(
       const ObjectId& id,
-      const ObjectFetchContextPtr& context);
+      const ObjectFetchContextPtr& context) override;
 
   /**
    * Create a blob aux data fetch request and enqueue it to the
