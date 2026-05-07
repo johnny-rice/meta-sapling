@@ -27,7 +27,7 @@ if [ $# -eq 0 ]; then
     print_help
 fi
 
-mode="fbcode//mode/dev"
+mode="fbcode//mode/opt"
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
