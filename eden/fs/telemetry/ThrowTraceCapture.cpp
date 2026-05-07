@@ -12,14 +12,13 @@
 #ifdef __APPLE__
 #include <dlfcn.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "eden/fs/rust/backtrace_ffi/src/lib.rs.h"
 
-#if defined(__linux__) || defined(__APPLE__)
-
 namespace {
-// Common: onThrow() captures a raw backtrace via Rust FFI.
-// Re-entrancy is handled by the Rust CapturingGuard in capture_backtrace().
 void onThrow() {
   constexpr size_t kMaxStackDepth = 64;
   facebook::eden::capture_backtrace(kMaxStackDepth);
@@ -68,9 +67,51 @@ __cxa_throw(void* thrownException, void* type, void (*destructor)(void*)) {
   __builtin_unreachable();
 }
 
-#endif // platform hooks
+#elif defined(_WIN32)
+// Windows: Vectored Exception Handler catches C++ exceptions (SEH 0xE06D7363).
 
-#endif // defined(__linux__) || defined(__APPLE__)
+constexpr DWORD kCppExceptionCode = 0xE06D7363;
+
+LONG WINAPI cppExceptionHandler(PEXCEPTION_POINTERS info) {
+  if (info && info->ExceptionRecord &&
+      info->ExceptionRecord->ExceptionCode == kCppExceptionCode) {
+    onThrow();
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// AddVectoredExceptionHandler first parameter: CALL_FIRST (1) registers our
+// handler at the front of the VEH list so it runs before other handlers,
+// ensuring we capture the stack trace before the exception is modified.
+// See:
+// https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-addvectoredexceptionhandler
+#define CALL_FIRST 1
+
+struct VehRegistrar {
+  PVOID handle_ = nullptr;
+  VehRegistrar(const VehRegistrar&) = delete;
+  VehRegistrar& operator=(const VehRegistrar&) = delete;
+  VehRegistrar(VehRegistrar&&) = delete;
+  VehRegistrar& operator=(VehRegistrar&&) = delete;
+
+  VehRegistrar() {
+    handle_ = AddVectoredExceptionHandler(CALL_FIRST, cppExceptionHandler);
+    if (!handle_) {
+      fprintf(
+          stderr,
+          "Failed to register VEH for throw-site stack trace capture\n");
+    }
+  }
+  ~VehRegistrar() {
+    if (handle_) {
+      RemoveVectoredExceptionHandler(handle_);
+    }
+  }
+};
+
+static VehRegistrar vehRegistrar;
+
+#endif // platform hooks
 
 namespace facebook::eden {
 

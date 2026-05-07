@@ -37,13 +37,17 @@ TEST(EdenErrorInfoTest, InitializeFuseEdenErrorInfoWithException) {
     EXPECT_NE(
         info.exceptionType.value().find("runtime_error"), std::string::npos);
     ASSERT_TRUE(info.stackTrace.has_value());
+    EXPECT_NE(info.stackTrace->find("Stack trace:"), std::string::npos)
+        << "Stack trace should contain raw trace section, got: "
+        << *info.stackTrace;
+#ifndef _WIN32
+    // Windows without PDB debug info can't resolve file paths or function names
     EXPECT_NE(
         info.stackTrace->find("EdenErrorInfoBuilderTest.cpp"),
         std::string::npos)
         << "Stack trace should contain source file, got: " << *info.stackTrace;
-#ifdef __linux__
-    EXPECT_NE(info.stackTrace->find("Stack trace:"), std::string::npos)
-        << "Stack trace should contain raw trace section, got: "
+    EXPECT_NE(info.stackTrace->find("throwRuntimeError"), std::string::npos)
+        << "Stack trace should contain the throwing function, got: "
         << *info.stackTrace;
 #endif
   }

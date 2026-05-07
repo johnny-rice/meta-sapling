@@ -23,6 +23,7 @@ namespace facebook::eden {
  * Platform-specific hooks:
  *   Linux:   __wrap___cxa_throw (via --wrap linker flag)
  *   macOS:   __cxa_throw override (via dlsym RTLD_NEXT)
+ *   Windows: Vectored Exception Handler (SEH code 0xE06D7363)
  */
 std::optional<std::string> getThrowSiteStackTrace();
 

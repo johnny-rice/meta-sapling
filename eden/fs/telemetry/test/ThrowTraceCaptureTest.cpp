@@ -14,7 +14,6 @@
 
 using namespace facebook::eden;
 
-#ifdef __linux__
 namespace {
 
 [[noreturn]] FOLLY_NOINLINE void innerThrowingFunc() {
@@ -26,23 +25,21 @@ namespace {
 }
 
 } // namespace
-#endif
 
 TEST(ThrowTraceCaptureTest, CapturesThrowSiteStackTrace) {
-#ifndef __linux__
-  GTEST_SKIP() << "Stack trace capture not yet implemented on this platform";
-#else
   try {
     outerThrowingFunc();
   } catch (const std::exception&) {
     auto trace = getThrowSiteStackTrace();
     ASSERT_TRUE(trace.has_value()) << "Stack trace capture is broken";
+#ifndef _WIN32
+    // Windows without PDB debug info can't resolve function names
     EXPECT_NE(trace->find("innerThrowingFunc"), std::string::npos)
         << "Expected throw-site function in trace, got: " << *trace;
     EXPECT_NE(trace->find("outerThrowingFunc"), std::string::npos)
         << "Expected caller function in trace, got: " << *trace;
-  }
 #endif
+  }
 }
 
 TEST(ThrowTraceCaptureTest, ReturnsNulloptOutsideCatchBlock) {
