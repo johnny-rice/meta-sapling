@@ -1635,7 +1635,61 @@ SaplingBackingStore::co_getBlobAuxData(
         std::move(auxData.value()), ObjectFetchContext::Origin::FromDiskCache};
   }
 
-  co_return co_await getBlobAuxDataEnqueue(slOid, context).semi();
+  co_return co_await co_getBlobAuxDataEnqueue(slOid, context);
+}
+
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+SaplingBackingStore::co_getBlobAuxDataEnqueue(
+    const SlOid& slOid,
+    const ObjectFetchContextPtr& context) {
+  if (!config_->getEdenConfig()->fetchHgAuxMetadata.getValue()) {
+    co_return BackingStore::GetBlobAuxResult{
+        nullptr, ObjectFetchContext::Origin::NotFetched};
+  }
+
+  auto self = shared_from_this();
+  XLOGF(DBG4, "making blob meta import request for {}", slOid);
+  auto requestContext = context.copy();
+  auto request =
+      SaplingImportRequest::makeBlobAuxImportRequest(slOid, requestContext);
+  auto unique = request->getUnique();
+
+  auto importTracker = std::make_unique<RequestMetricsScope>(
+      &self->pendingImportBlobAuxWatches_);
+
+  self->traceBus_->publish(
+      HgImportTraceEvent::queue(
+          unique,
+          HgImportTraceEvent::BLOB_AUX,
+          slOid,
+          context->getPriority().getClass(),
+          context->getCause(),
+          context->getClientPid()));
+
+  auto guard = folly::makeGuard([&unique, &slOid, &context, self] {
+    self->traceBus_->publish(
+        HgImportTraceEvent::finish(
+            unique,
+            HgImportTraceEvent::BLOB_AUX,
+            slOid,
+            context->getPriority().getClass(),
+            context->getCause(),
+            context->getClientPid(),
+            context->getFetchedSource()));
+  });
+
+  auto result = co_await folly::coro::co_awaitTry(
+      self->queue_.co_enqueueBlobAux(std::move(request)));
+
+  self->queue_.markImportAsFinished<BlobAuxDataPtr::element_type>(
+      slOid, result);
+
+  if (result.hasException()) {
+    co_yield folly::coro::co_error(std::move(result).exception());
+  }
+
+  co_return BackingStore::GetBlobAuxResult{
+      std::move(result).value(), ObjectFetchContext::Origin::FromNetworkFetch};
 }
 
 ImmediateFuture<BackingStore::GetBlobAuxResult>

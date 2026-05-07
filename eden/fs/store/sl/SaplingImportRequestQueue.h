@@ -61,6 +61,9 @@ class SaplingImportRequestQueue {
   ImmediateFuture<BlobAuxDataPtr> enqueueBlobAux(
       std::shared_ptr<SaplingImportRequest> request);
 
+  folly::coro::Task<BlobAuxDataPtr> co_enqueueBlobAux(
+      std::shared_ptr<SaplingImportRequest> request);
+
   /**
    * Enqueue a tree aux data request to the queue.
    *

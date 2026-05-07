@@ -582,6 +582,10 @@ class SaplingBackingStore final
       const SlOid& slOid,
       const ObjectFetchContextPtr& context);
 
+  folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxDataEnqueue(
+      const SlOid& slOid,
+      const ObjectFetchContextPtr& context);
+
   /**
    * Fetch multiple aux data at once.
    *
