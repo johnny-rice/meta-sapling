@@ -4,11 +4,11 @@ sidebar_position: 4
 
 import {SLCommand} from '@site/elements'
 
-# Signing Commits
+# Signing commits
 
 Currently, signing is only supported with commits in Git repos. See [Git's documentation on "Signing Your Work" for more context](https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work). Sapling supports GPG, SSH, and X.509 (S/MIME) signing backends.
 
-## Identity Configuration (GPG)
+## Identity configuration (GPG)
 
 When using GPG signing, Sapling has a single configuration for your identity:
 
