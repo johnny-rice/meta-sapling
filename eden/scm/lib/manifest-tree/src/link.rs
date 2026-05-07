@@ -18,8 +18,6 @@ use manifest::File;
 use manifest::FileMetadata;
 use manifest::FsNodeMetadata;
 use once_cell::sync::OnceCell;
-use pathmatcher::DirectoryMatch;
-use pathmatcher::Matcher;
 use types::HgId;
 use types::PathComponentBuf;
 use types::RepoPath;
@@ -155,15 +153,6 @@ impl Link {
         match self.as_ref() {
             Leaf(metadata) => Some(File::new(path, *metadata)),
             _ => None,
-        }
-    }
-
-    pub fn matches(&self, matcher: &impl Matcher, path: &RepoPath) -> Result<bool> {
-        match self.as_ref() {
-            Leaf(_) => matcher.matches_file(path),
-            Durable(_) | Ephemeral(_) => {
-                Ok(matcher.matches_directory(path)? != DirectoryMatch::Nothing)
-            }
         }
     }
 
