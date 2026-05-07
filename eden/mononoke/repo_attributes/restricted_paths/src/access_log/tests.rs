@@ -213,6 +213,38 @@ async fn test_shadow_matching_restricted_sources_log_row_without_mismatch(
     Ok(())
 }
 
+// What it tests: restriction-root-only differences stay diagnostic-only.
+// Expected: the broad mismatch detail is populated, but the queryable mismatch
+// boolean remains false.
+#[mononoke::fbinit_test]
+async fn test_shadow_root_only_differences_do_not_set_shadow_mismatch(
+    fb: FacebookInit,
+) -> Result<()> {
+    let samples = ShadowComparisonFieldFixture::new(
+        fb,
+        Some(restricted_result(
+            false,
+            false,
+            "shared_acl",
+            Some("config/restricted"),
+        )?),
+        Some(restricted_result(false, false, "shared_acl", None)?),
+        manifest_access_data(ManifestType::HgAugmented),
+    )?
+    .log_with(log_source_results_to_scuba)?;
+
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert_eq!(
+        sample_field(sample, "shadow_mismatch"),
+        Some("false".to_string())
+    );
+    let detail = sample_json_field(sample, "shadow_mismatch_detail")?
+        .ok_or_else(|| anyhow!("missing shadow_mismatch_detail"))?;
+    assert_eq!(detail["differences"], json!(["restriction_paths"]));
+    Ok(())
+}
+
 // What it tests: Shadow aggregate fields stay config-authoritative while
 // AclManifest contributes comparison-only telemetry.
 // Expected: top-level aggregate fields are derived from config, while
@@ -343,7 +375,7 @@ async fn test_shadow_error_only_rows_are_logged(fb: FacebookInit) -> Result<()> 
     );
     assert_eq!(
         sample_field(sample, "shadow_mismatch"),
-        Some("true".to_string())
+        Some("false".to_string())
     );
     let detail = sample_json_field(sample, "shadow_mismatch_detail")?
         .ok_or_else(|| anyhow!("missing shadow_mismatch_detail"))?;

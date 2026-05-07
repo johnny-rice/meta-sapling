@@ -259,7 +259,10 @@ pub(crate) fn log_source_results_to_scuba(
     );
     let shadow_mismatch_detail =
         shadow_mismatch_detail_for_source_results(config_result, acl_manifest_result);
-    scuba.add("shadow_mismatch", shadow_mismatch_detail.is_some());
+    scuba.add(
+        "shadow_mismatch",
+        shadow_mismatch_for_source_results(config_result, acl_manifest_result),
+    );
     if let Some(shadow_mismatch_detail) = shadow_mismatch_detail {
         scuba.add("shadow_mismatch_detail", shadow_mismatch_detail);
     }
@@ -332,6 +335,44 @@ fn shadow_mismatch_detail_for_source_results(
     }
     detail.insert("differences".to_string(), json!(differences));
     Some(Value::Object(detail).to_string())
+}
+
+/// Returns the queryable Shadow mismatch signal.
+///
+/// This marks rows that should be investigated: asymmetric source errors, or
+/// successful source results that differ in restricted/unrestricted state,
+/// authorization outcome, or restriction ACLs. Restriction-root differences are
+/// intentionally excluded because AclManifest cannot provide roots by design;
+/// they remain in `shadow_mismatch_detail` for diagnosis.
+fn shadow_mismatch_for_source_results(
+    config_result: Option<&SourceRestrictionResult>,
+    acl_manifest_result: Option<&SourceRestrictionResult>,
+) -> bool {
+    let restriction_comparison = |source: SourceComparisonData| {
+        (
+            source.restricted,
+            source.has_authorization,
+            source.restriction_acls,
+        )
+    };
+
+    let error_mismatch = source_error_status(config_result)
+        .zip(source_error_status(acl_manifest_result))
+        .is_some_and(|(config_error, acl_manifest_error)| config_error != acl_manifest_error);
+
+    if error_mismatch {
+        return true;
+    }
+
+    successful_source_comparison(config_result)
+        .zip(successful_source_comparison(acl_manifest_result))
+        .is_some_and(|(config, acl_manifest)| {
+            restriction_comparison(config) != restriction_comparison(acl_manifest)
+        })
+}
+
+fn source_error_status(result: Option<&SourceRestrictionResult>) -> Option<bool> {
+    result.map(|result| result.is_err())
 }
 
 fn shadow_mismatch_differences(
