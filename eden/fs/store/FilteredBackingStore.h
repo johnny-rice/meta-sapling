@@ -145,6 +145,7 @@ class FilteredBackingStore
   FRIEND_TEST(SaplingFilteredBackingStoreTest, testMercurialFFIInvalidFOID);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getNonExistent);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getBlob);
+  FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, co_getBlobAuxData);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getTree);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getRootTree);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getGlobFiles);
@@ -186,6 +187,10 @@ class FilteredBackingStore
   folly::SemiFuture<GetBlobAuxResult> getBlobAuxData(
       const ObjectId& id,
       const ObjectFetchContextPtr& context) override;
+
+  folly::coro::now_task<GetBlobAuxResult> co_getBlobAuxData(
+      const ObjectId& id,
+      const ObjectFetchContextPtr& context);
 
   [[nodiscard]] folly::SemiFuture<folly::Unit> prefetchBlobs(
       ObjectIdRange ids,

@@ -545,6 +545,19 @@ FilteredBackingStore::getBlobAuxData(
   return backingStore_->getBlobAuxData(filteredId.object(), context);
 }
 
+folly::coro::now_task<BackingStore::GetBlobAuxResult>
+FilteredBackingStore::co_getBlobAuxData(
+    const ObjectId& id,
+    const ObjectFetchContextPtr& context) {
+  if (isSlOid(id)) {
+    co_return co_await backingStore_->getBlobAuxData(id, context);
+  }
+
+  auto filteredId = FilteredObjectId::fromObjectId(id);
+  co_return co_await backingStore_->getBlobAuxData(
+      filteredId.object(), context);
+}
+
 folly::SemiFuture<BackingStore::GetBlobResult> FilteredBackingStore::getBlob(
     const ObjectId& id,
     const ObjectFetchContextPtr& context) {

@@ -286,6 +286,23 @@ TEST_F(FakeSubstringFilteredBackingStoreTest, getBlob) {
   EXPECT_EQ("foobar", blobContents(*std::move(future6).get(0ms).blob));
 }
 
+CO_TEST_F(FakeSubstringFilteredBackingStoreTest, co_getBlobAuxData) {
+  auto id = makeTestId("1");
+  auto filteredId = ObjectId{
+      FilteredObjectId{id, FilteredObjectIdType::OBJECT_TYPE_BLOB}.getValue()};
+  auto* storedBlob = wrappedStore_->putBlob(id, "foobar");
+  storedBlob->setReady();
+
+  auto result = co_await filteredStore_->co_getBlobAuxData(
+      filteredId, ObjectFetchContext::getNullContext());
+
+  EXPECT_NE(result.blobAux, nullptr);
+  EXPECT_EQ(result.blobAux->size, 6);
+  EXPECT_EQ(
+      result.blobAux->sha1,
+      Hash20::sha1(folly::ByteRange{folly::StringPiece{"foobar"}}));
+}
+
 TEST_F(FakeSubstringFilteredBackingStoreTest, getTree) {
   // Populate some files in the store
   auto [runme, runme_id] =
