@@ -82,6 +82,11 @@ ImmediateFuture<Hash32> VirtualInode::getBlake3(
     RelativePathPiece path,
     const std::shared_ptr<ObjectStore>& objectStore,
     const ObjectFetchContextPtr& fetchContext) const {
+  // DEPRECATED: use co_getBlake3 directly. Kept only because
+  // EdenServiceHandler and getDigestHash still call this via
+  // ImmediateFuture chains; delete once those paths are migrated
+  // to coroutines.
+
   // Ensure this is a regular file.
   // We intentionally want to refuse to compute the blake3 of symlinks
   switch (getDtype()) {

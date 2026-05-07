@@ -735,6 +735,9 @@ ObjectStore::getBlobAuxDataImpl(
     const ObjectId& id,
     const ObjectFetchContextPtr& context,
     folly::stop_watch<std::chrono::milliseconds> watch) const {
+  // DEPRECATED: use co_getBlobAuxDataImpl directly. Kept only because
+  // getBlobAuxData still consumes ImmediateFuture chains;
+  // delete once those paths are migrated to coroutines.
   return ImmediateFuture{backingStore_->getBlobAuxData(id, context)}
       .thenValue(
           [self = shared_from_this(), id, context = context.copy(), watch](
@@ -877,6 +880,9 @@ Hash32 ObjectStore::computeBlake3(const Blob& blob) const {
 ImmediateFuture<Hash32> ObjectStore::getBlobBlake3(
     const ObjectId& id,
     const ObjectFetchContextPtr& context) const {
+  // DEPRECATED: use co_getBlobBlake3 directly. Kept only because
+  // VirtualInode.cpp and FileInode.cpp still consume ImmediateFuture chains;
+  // delete once those paths are migrated to coroutines.
   return getBlobAuxData(id, context, true /* blake3Needed */)
       .thenValue(
           [id, context = context.copy(), self = shared_from_this()](

@@ -1097,6 +1097,7 @@ EdenServiceHandler::semifuture_synchronizeWorkingCopy(
       .semi();
 }
 
+// DEPRECATED. Use co_getBlake3Impl instead.
 folly::SemiFuture<std::unique_ptr<std::vector<Blake3Result>>>
 EdenServiceHandler::semifuture_getBlake3Impl(
     std::unique_ptr<std::string> mountPoint,

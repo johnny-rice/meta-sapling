@@ -34,7 +34,9 @@ class VirtualInodeLoader {
  public:
   VirtualInodeLoader() = default;
 
-  // Arrange to load the inode for the input path (futures interface).
+  // DEPRECATED: use co_load() directly. Kept only because
+  // applyToVirtualInode still consumes SemiFuture chains;
+  // delete once that path is migrated to coroutines.
   folly::SemiFuture<VirtualInode> load(RelativePathPiece path) {
     VirtualInodeLoader* parent = this;
 
@@ -65,11 +67,9 @@ class VirtualInodeLoader {
     return parent;
   }
 
-  // Called to signal that a load attempt has completed.
-  // In the success case this will cause any children of
-  // this inode to be loaded.
-  // In the failure case this will propagate the failure to
-  // any children of this node, too.
+  // DEPRECATED: use co_loaded() directly. Kept only because
+  // applyToVirtualInode still consumes ImmediateFuture chains;
+  // delete once that path is migrated to coroutines.
   ImmediateFuture<folly::Unit> loaded(
       folly::Try<VirtualInode> inodeTreeTry,
       RelativePathPiece path,
@@ -237,6 +237,9 @@ auto applyToVirtualInode(
     Func func,
     const std::shared_ptr<ObjectStore>& store,
     const ObjectFetchContextPtr& fetchContext) {
+  // DEPRECATED: use co_applyToVirtualInode directly. Kept only because
+  // EdenServiceHandler and VirtualInodeLoaderTest still consume
+  // ImmediateFuture chains; delete once those paths are migrated to coroutines.
   using FuncRet = folly::invoke_result_t<Func&, VirtualInode, RelativePath>;
   using Result = typename folly::isFutureOrSemiFuture<FuncRet>::Inner;
 

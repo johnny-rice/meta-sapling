@@ -1588,6 +1588,10 @@ folly::SemiFuture<BackingStore::GetBlobAuxResult>
 SaplingBackingStore::getBlobAuxData(
     const ObjectId& id,
     const ObjectFetchContextPtr& context) {
+  // DEPRECATED: use co_getBlobAuxData directly. Kept only because
+  // ObjectStore::getBlobAuxDataImpl and FilteredBackingStore::getBlobAuxData
+  // still consume ImmediateFuture chains;
+  // delete once those paths are migrated to coroutines.
   DurationScope<EdenStats> scope{
       stats_, &SaplingBackingStoreStats::getBlobAuxData};
 
@@ -1696,6 +1700,10 @@ ImmediateFuture<BackingStore::GetBlobAuxResult>
 SaplingBackingStore::getBlobAuxDataEnqueue(
     const SlOid& slOid,
     const ObjectFetchContextPtr& context) {
+  // DEPRECATED: use co_getBlobAuxDataEnqueue directly. Kept only because
+  // SaplingBackingStore::getBlobAuxData and EdenServiceHandler
+  // still consume ImmediateFuture chains;
+  // delete once those paths are migrated to coroutines.
   if (!config_->getEdenConfig()->fetchHgAuxMetadata.getValue()) {
     return BackingStore::GetBlobAuxResult{
         nullptr, ObjectFetchContext::Origin::NotFetched};

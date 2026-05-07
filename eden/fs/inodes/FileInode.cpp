@@ -895,6 +895,9 @@ ImmediateFuture<Hash20> FileInode::getSha1(
 
 ImmediateFuture<Hash32> FileInode::getBlake3(
     const ObjectFetchContextPtr& fetchContext) {
+  // DEPRECATED: use co_getBlake3 directly. Kept only because
+  // VirtualInode::getBlake3 and getxattr still consume ImmediateFuture chains;
+  // delete once those paths are migrated to coroutines.
   auto state = LockedState{this};
 
   logAccess(*fetchContext);
