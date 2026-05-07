@@ -106,6 +106,7 @@ struct GitBookmarkInfo {
     bookmark_name: String,
     old_bookmark_value: String,
     new_bookmark_value: String,
+    pusher_identities: Vec<String>,
     server_hostname: String,
     timestamp: u128,
 }
@@ -129,12 +130,19 @@ impl GitBookmarkInfo {
         let new_bookmark_value = get_git_hash(ctx, repo, info.operation.new_bookmark_value())
             .await
             .unwrap_or_else(|| ObjectId::null(Kind::Sha1).to_hex().to_string());
+        let pusher_identities = ctx
+            .metadata()
+            .identities()
+            .iter()
+            .map(|i| i.to_typed_string())
+            .collect();
         let server_hostname = get_hostname().unwrap_or("error".to_string());
         Self {
             repo_name,
             bookmark_name,
             old_bookmark_value,
             new_bookmark_value,
+            pusher_identities,
             server_hostname,
             timestamp,
         }
@@ -157,7 +165,7 @@ impl Loggable for GitBookmarkInfo {
         ref_logger.set_ref_name(self.bookmark_name.clone());
         ref_logger.set_old_ref_value(self.old_bookmark_value.clone());
         ref_logger.set_new_ref_value(self.new_bookmark_value.clone());
-        ref_logger.set_pusher_identities(vec![]); // Maintaining parity with current Git logger
+        ref_logger.set_pusher_identities(self.pusher_identities.clone());
         ref_logger.set_server_hostname(self.server_hostname.clone());
         ref_logger.set_received_timestamp(self.timestamp as i64);
         if let Some(cri) = ctx.client_request_info() {
