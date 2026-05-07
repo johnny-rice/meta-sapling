@@ -1497,9 +1497,8 @@ ImmediateFuture<folly::Unit> EdenMount::waitForPendingWrites() const {
 }
 
 folly::coro::now_task<folly::Unit> EdenMount::co_waitForPendingWrites() const {
-  co_await serverState_->getFaultInjector()
-      .checkAsync("waitForPendingWrites", "")
-      .semi();
+  co_await serverState_->getFaultInjector().co_checkAsync(
+      "waitForPendingWrites", "");
   auto ch = channel_.load();
   if (ch) {
     co_await ch->co_waitForPendingWrites();
