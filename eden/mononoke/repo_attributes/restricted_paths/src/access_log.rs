@@ -55,6 +55,66 @@ pub(crate) enum RestrictedPathAccessData {
 pub(crate) type SourceRestrictionResult =
     std::result::Result<Arc<SourceRestrictionCheckResult>, Arc<anyhow::Error>>;
 
+/// Authorization fields that are logged at the top level of a restricted-path
+/// access row.
+#[derive(Clone, Copy)]
+struct LoggedAuthorization {
+    has_authorization: bool,
+    is_allowlisted_tooling: bool,
+    is_rollout_allowlisted: bool,
+    has_acl_access: bool,
+}
+
+/// Top-level restriction and authorization fields for the source that controls
+/// the aggregate log row.
+struct RestrictedPathAggregateLogData<'a> {
+    restricted_paths: Option<&'a [NonRootMPath]>,
+    authorization: LoggedAuthorization,
+    acls: Vec<&'a MononokeIdentity>,
+}
+
+/// Complete Scuba row payload for restricted-path access logging.
+///
+/// `aggregate` is optional in this no-op refactor because Shadow source
+/// comparison still emits error-only rows when config fails. The follow-up
+/// behavior diff can make it required after those rows stop being logged.
+struct RestrictedPathLogData<'a> {
+    repo_id: RepositoryId,
+    access_data: RestrictedPathAccessData,
+    aggregate: Option<RestrictedPathAggregateLogData<'a>>,
+    considered_restricted_by: Vec<String>,
+    source_comparison: Option<SourceComparisonLogContext>,
+}
+
+/// Extra fields emitted only when a row compares config and AclManifest source
+/// results.
+struct SourceComparisonLogContext {
+    acl_manifest_mode: AclManifestMode,
+    config_error: Option<String>,
+    acl_manifest_error: Option<String>,
+    shadow_mismatch: bool,
+    shadow_mismatch_detail: Option<String>,
+}
+
+impl SourceComparisonLogContext {
+    fn add_to_scuba(self, scuba: &mut MononokeScubaSampleBuilder) {
+        scuba.add(
+            "acl_manifest_mode",
+            acl_manifest_mode_as_scuba_value(self.acl_manifest_mode),
+        );
+        if let Some(config_error) = self.config_error {
+            scuba.add("config_error", config_error);
+        }
+        if let Some(acl_manifest_error) = self.acl_manifest_error {
+            scuba.add("acl_manifest_error", acl_manifest_error);
+        }
+        scuba.add("shadow_mismatch", self.shadow_mismatch);
+        if let Some(shadow_mismatch_detail) = self.shadow_mismatch_detail {
+            scuba.add("shadow_mismatch_detail", shadow_mismatch_detail);
+        }
+    }
+}
+
 /// Authorization and restriction data for one logging source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceRestrictionCheckResult {
@@ -212,87 +272,70 @@ pub(crate) fn log_source_results_to_scuba(
     acl_manifest_result: Option<&SourceRestrictionResult>,
     acl_manifest_mode: AclManifestMode,
     access_data: RestrictedPathAccessData,
-    mut scuba: MononokeScubaSampleBuilder,
+    scuba: MononokeScubaSampleBuilder,
 ) -> Result<()> {
-    let any_source_ran = config_result.is_some() || acl_manifest_result.is_some();
-    if !any_source_ran {
+    let Some(source_comparison) =
+        source_comparison_log_context(config_result, acl_manifest_result, acl_manifest_mode)
+    else {
         return Ok(());
-    }
+    };
 
+    log_access_to_scuba(
+        ctx,
+        RestrictedPathLogData {
+            repo_id,
+            access_data,
+            aggregate: config_result.and_then(|result| {
+                let result = result.as_ref().ok()?;
+                Some(RestrictedPathAggregateLogData {
+                    restricted_paths: result.restriction_paths.as_deref(),
+                    authorization: LoggedAuthorization {
+                        has_authorization: result.has_authorization,
+                        is_allowlisted_tooling: result.is_allowlisted_tooling,
+                        is_rollout_allowlisted: result.is_rollout_allowlisted,
+                        has_acl_access: result.has_acl_access,
+                    },
+                    acls: result.restriction_acls.iter().collect(),
+                })
+            }),
+            considered_restricted_by: considered_restricted_by_for_source_results(
+                config_result,
+                acl_manifest_result,
+            ),
+            source_comparison: Some(source_comparison),
+        },
+        scuba,
+    )
+}
+
+/// Build the source-comparison fields for rows that need Shadow telemetry.
+///
+/// Returns `None` when every source that ran completed unrestricted, matching
+/// the old behavior of skipping those rows entirely.
+fn source_comparison_log_context(
+    config_result: Option<&SourceRestrictionResult>,
+    acl_manifest_result: Option<&SourceRestrictionResult>,
+    acl_manifest_mode: AclManifestMode,
+) -> Option<SourceComparisonLogContext> {
     let any_source_restricted =
         is_source_restricted(config_result) || is_source_restricted(acl_manifest_result);
     let any_source_failed = is_source_error(config_result) || is_source_error(acl_manifest_result);
     if !any_source_restricted && !any_source_failed {
-        return Ok(());
+        return None;
     }
 
-    scuba.add_metadata(ctx.metadata());
-    scuba.add_common_server_data();
-    scuba.unsampled();
-
-    scuba.add("repo_id", repo_id.id());
-    scuba.add(
-        "acl_manifest_mode",
-        acl_manifest_mode_as_scuba_value(acl_manifest_mode),
-    );
-
-    if let Some(Ok(config)) = config_result {
-        add_aggregate_fields_to_scuba(&mut scuba, config);
-    }
-
-    match access_data {
-        RestrictedPathAccessData::Manifest(manifest_id, manifest_type) => {
-            scuba.add("manifest_id", manifest_id.to_string());
-            scuba.add("manifest_type", manifest_type.to_string());
-        }
-        RestrictedPathAccessData::FullPath { full_path } => {
-            scuba.add("full_path", full_path.to_string());
-        }
-    }
-
-    add_source_error_to_scuba(&mut scuba, SourceKind::Config, config_result);
-    add_source_error_to_scuba(&mut scuba, SourceKind::AclManifest, acl_manifest_result);
-
-    scuba.add(
-        "considered_restricted_by",
-        considered_restricted_by_for_source_results(config_result, acl_manifest_result),
-    );
-    let shadow_mismatch_detail =
-        shadow_mismatch_detail_for_source_results(config_result, acl_manifest_result);
-    scuba.add(
-        "shadow_mismatch",
-        shadow_mismatch_for_source_results(config_result, acl_manifest_result),
-    );
-    if let Some(shadow_mismatch_detail) = shadow_mismatch_detail {
-        scuba.add("shadow_mismatch_detail", shadow_mismatch_detail);
-    }
-    scuba.log();
-
-    Ok(())
-}
-
-fn add_aggregate_fields_to_scuba(
-    scuba: &mut MononokeScubaSampleBuilder,
-    result: &SourceRestrictionCheckResult,
-) {
-    scuba.add("has_authorization", result.has_authorization);
-    scuba.add("is_allowlisted_tooling", result.is_allowlisted_tooling);
-    scuba.add("is_rollout_allowlisted", result.is_rollout_allowlisted);
-    scuba.add("has_acl_access", result.has_acl_access);
-    scuba.add("acls", acls_to_strings(&result.restriction_acls));
-    if let Some(restriction_paths) = result.restriction_paths.as_deref() {
-        scuba.add("restricted_paths", paths_to_strings(restriction_paths));
-    }
-}
-
-fn add_source_error_to_scuba(
-    scuba: &mut MononokeScubaSampleBuilder,
-    source_kind: SourceKind,
-    result: Option<&SourceRestrictionResult>,
-) {
-    if let Some(Err(err)) = result {
-        scuba.add(source_kind.error_field(), format!("{:#}", err));
-    }
+    Some(SourceComparisonLogContext {
+        acl_manifest_mode,
+        config_error: config_result
+            .and_then(|result| result.as_ref().err().map(|err| format!("{:#}", err))),
+        acl_manifest_error: acl_manifest_result
+            .and_then(|result| result.as_ref().err().map(|err| format!("{:#}", err))),
+        shadow_mismatch: shadow_mismatch_for_source_results(config_result, acl_manifest_result),
+        shadow_mismatch_detail: shadow_mismatch_detail_for_source_results(
+            config_result,
+            acl_manifest_result,
+        ),
+    })
 }
 
 fn considered_restricted_by_for_source_results(
@@ -707,18 +750,53 @@ pub(crate) async fn log_access_to_restricted_path(
     )
     .await?;
 
+    let result = restriction_check::build_restriction_check_result(
+        authorization.has_authorization(),
+        restricted_paths.clone(),
+    );
+    log_checked_access_to_restricted_path(
+        ctx,
+        RestrictedPathLogData {
+            repo_id,
+            access_data,
+            aggregate: Some(RestrictedPathAggregateLogData {
+                restricted_paths: Some(&restricted_paths),
+                authorization: LoggedAuthorization {
+                    has_authorization: authorization.has_authorization(),
+                    is_allowlisted_tooling: authorization.is_allowlisted_tooling,
+                    is_rollout_allowlisted: authorization.is_rollout_allowlisted,
+                    has_acl_access: authorization.has_acl_access,
+                },
+                acls,
+            }),
+            considered_restricted_by,
+            source_comparison: None,
+        },
+        scuba,
+    )?;
+
+    Ok(result)
+}
+
+fn log_checked_access_to_restricted_path(
+    ctx: &CoreContext,
+    log_data: RestrictedPathLogData<'_>,
+    scuba: MononokeScubaSampleBuilder,
+) -> Result<()> {
     // Override sampling for unauthorized SCSC accesses to restricted paths
     #[cfg(fbcode_build)]
     {
-        use clientinfo::ClientEntryPoint;
+        if let Some(aggregate) = log_data.aggregate.as_ref() {
+            use clientinfo::ClientEntryPoint;
 
-        let is_scsc = ctx
-            .metadata()
-            .client_request_info()
-            .is_some_and(|cri| cri.entry_point == ClientEntryPoint::ScsClient);
+            let is_scsc = ctx
+                .metadata()
+                .client_request_info()
+                .is_some_and(|cri| cri.entry_point == ClientEntryPoint::ScsClient);
 
-        if is_scsc && !authorization.has_authorization() {
-            ctx.set_override_sampling();
+            if is_scsc && !aggregate.authorization.has_authorization {
+                ctx.set_override_sampling();
+            }
         }
     }
 
@@ -726,60 +804,37 @@ pub(crate) async fn log_access_to_restricted_path(
     // Only available in fbcode builds
     #[cfg(fbcode_build)]
     {
-        let use_schematized_logger = justknobs::eval(
-            "scm/mononoke:restricted_paths_use_schematized_logger",
-            None,
-            None,
-        )?;
+        if let Some(aggregate) = log_data.aggregate.as_ref() {
+            let use_schematized_logger = justknobs::eval(
+                "scm/mononoke:restricted_paths_use_schematized_logger",
+                None,
+                None,
+            )?;
 
-        if use_schematized_logger {
-            if let Err(e) = schematized_logger::log_access_to_schematized_logger(
-                ctx,
-                repo_id,
-                &restricted_paths,
-                &access_data,
-                authorization.has_authorization(),
-                authorization.is_allowlisted_tooling,
-                authorization.is_rollout_allowlisted,
-                &acls,
-            ) {
-                tracing::error!("Failed to log to schematized logger: {:?}", e);
+            if use_schematized_logger {
+                if let Err(e) = schematized_logger::log_access_to_schematized_logger(
+                    ctx,
+                    log_data.repo_id,
+                    aggregate.restricted_paths.unwrap_or(&[]),
+                    &log_data.access_data,
+                    aggregate.authorization.has_authorization,
+                    aggregate.authorization.is_allowlisted_tooling,
+                    aggregate.authorization.is_rollout_allowlisted,
+                    &aggregate.acls,
+                ) {
+                    tracing::error!("Failed to log to schematized logger: {:?}", e);
+                }
             }
         }
     }
 
-    log_access_to_scuba(
-        ctx,
-        repo_id,
-        &restricted_paths,
-        access_data,
-        authorization.has_authorization(),
-        authorization.is_allowlisted_tooling,
-        authorization.is_rollout_allowlisted,
-        authorization.has_acl_access,
-        acls,
-        scuba,
-        considered_restricted_by,
-    )?;
-
-    Ok(restriction_check::build_restriction_check_result(
-        authorization.has_authorization(),
-        restricted_paths,
-    ))
+    log_access_to_scuba(ctx, log_data, scuba)
 }
 
 fn log_access_to_scuba(
     ctx: &CoreContext,
-    repo_id: RepositoryId,
-    restricted_paths: &[NonRootMPath],
-    access_data: RestrictedPathAccessData,
-    has_authorization: bool,
-    is_allowlisted_tooling: bool,
-    is_rollout_allowlisted: bool,
-    has_acl_access: bool,
-    acls: Vec<&MononokeIdentity>,
+    log_data: RestrictedPathLogData<'_>,
     mut scuba: MononokeScubaSampleBuilder,
-    considered_restricted_by: Vec<String>,
 ) -> Result<()> {
     scuba.add_metadata(ctx.metadata());
 
@@ -788,28 +843,37 @@ fn log_access_to_scuba(
     // We want to log all samples
     scuba.unsampled();
 
-    scuba.add("repo_id", repo_id.id());
-    scuba.add(
-        "restricted_paths",
-        restricted_paths
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>(),
-    );
+    scuba.add("repo_id", log_data.repo_id.id());
 
-    scuba.add("has_authorization", has_authorization);
-    scuba.add("is_allowlisted_tooling", is_allowlisted_tooling);
-    scuba.add("is_rollout_allowlisted", is_rollout_allowlisted);
-    scuba.add("has_acl_access", has_acl_access);
-    scuba.add(
-        "acls",
-        acls.into_iter()
-            .map(|acl| acl.to_string())
-            .collect::<Vec<_>>(),
-    );
+    if let Some(aggregate) = log_data.aggregate {
+        if let Some(restricted_paths) = aggregate.restricted_paths {
+            scuba.add("restricted_paths", paths_to_strings(restricted_paths));
+        }
+        scuba.add(
+            "has_authorization",
+            aggregate.authorization.has_authorization,
+        );
+        scuba.add(
+            "is_allowlisted_tooling",
+            aggregate.authorization.is_allowlisted_tooling,
+        );
+        scuba.add(
+            "is_rollout_allowlisted",
+            aggregate.authorization.is_rollout_allowlisted,
+        );
+        scuba.add("has_acl_access", aggregate.authorization.has_acl_access);
+        scuba.add(
+            "acls",
+            aggregate
+                .acls
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
+    }
 
     // Log access data based on the type
-    match access_data {
+    match log_data.access_data {
         RestrictedPathAccessData::Manifest(manifest_id, manifest_type) => {
             scuba.add("manifest_id", manifest_id.to_string());
             scuba.add("manifest_type", manifest_type.to_string());
@@ -819,7 +883,13 @@ fn log_access_to_scuba(
         }
     }
 
-    scuba.add("considered_restricted_by", considered_restricted_by);
+    scuba.add(
+        "considered_restricted_by",
+        log_data.considered_restricted_by,
+    );
+    if let Some(source_comparison) = log_data.source_comparison {
+        source_comparison.add_to_scuba(&mut scuba);
+    }
 
     scuba.log();
 
