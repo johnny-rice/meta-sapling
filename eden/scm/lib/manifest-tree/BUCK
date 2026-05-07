@@ -11,7 +11,7 @@ rust_library(
             "name": "bench",
             "required-features": ["for-tests"],
         }],
-        "dependencies_override": {"dev-dependencies": {
+        "dependencies_override": {"dependencies": {
             "sapling-manifest": {
                 "default-features": False,
                 "features": ["for-tests"],
