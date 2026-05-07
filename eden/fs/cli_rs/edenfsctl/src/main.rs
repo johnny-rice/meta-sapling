@@ -11,7 +11,6 @@ use std::process::Command;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use clap::Parser;
 use edenfs_commands::is_command_enabled_in_rust;
 #[cfg(fbcode_build)]
 use edenfs_telemetry::EDENFSCTL_CLI_USAGE;
