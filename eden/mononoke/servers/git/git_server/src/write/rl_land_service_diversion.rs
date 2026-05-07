@@ -336,6 +336,7 @@ pub async fn divert_to_rl_land_service(
         changes,
         request_type: SubmitLandRequestType::direct_push(DirectPushRequest {
             is_emergency: false,
+            allow_non_fast_forward_move: request_context.pushvars.allow_non_fast_forward(),
             ..Default::default()
         }),
         ..Default::default()

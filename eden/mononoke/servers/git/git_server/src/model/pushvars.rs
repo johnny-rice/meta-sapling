@@ -17,6 +17,7 @@ const PUSH_CONCURRENCY: &str = "x-git-push-concurrency";
 const BYPASS_BOOKMARK_CACHE: &str = "x-git-bypass-bookmark-cache";
 const UNSAMPLED_PERF_LOGGING: &str = "x-git-unsampled-perf-logging";
 const EMERGENCY_PUSH: &str = "x-git-emergency-push";
+const ALLOW_NON_FAST_FORWARD: &str = "x-git-allow-non-ffwd-push";
 
 #[derive(Clone, StateData)]
 pub struct Pushvars(HashMap<String, Bytes>);
@@ -71,6 +72,13 @@ impl Pushvars {
 
     pub fn emergency_push(&self) -> bool {
         self.0.get(EMERGENCY_PUSH).is_some_and(|v| **v == *b"1")
+    }
+
+    /// Mirrors `bookmarks_movement::ALLOW_NON_FFWD_PUSHVAR`: presence of the
+    /// header is sufficient (value is not inspected), so the diverted MRL
+    /// path behaves identically to the local push path.
+    pub fn allow_non_fast_forward(&self) -> bool {
+        self.0.contains_key(ALLOW_NON_FAST_FORWARD)
     }
 }
 
