@@ -19,6 +19,7 @@ harness = false
 
 [dependencies]
 anyhow = "1.0.102"
+base64 = { version = "0.22.1", features = ["alloc"], optional = true }
 dirs = "6.0"
 faccess = "0.2.4"
 filetime = { version = "0.2.27", optional = true }
@@ -61,5 +62,5 @@ libc = "0.2.183"
 
 [features]
 default = []
-fb = ["filetime", "regex", "sapling-config-remote-loader/fb", "sapling-hgtime", "sapling-http-client", "sapling-identity/fb", "sapling-types", "serde", "serde_json", "serde_urlencoded"]
+fb = ["base64", "filetime", "regex", "sapling-config-remote-loader/fb", "sapling-hgtime", "sapling-http-client", "sapling-identity/fb", "sapling-types", "serde", "serde_json", "serde_urlencoded"]
 sl_oss = []

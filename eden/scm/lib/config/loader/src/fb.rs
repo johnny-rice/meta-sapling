@@ -26,6 +26,7 @@ pub(crate) mod internalconfig;
 pub(crate) mod internalconfigs;
 pub(crate) mod thrift_types;
 
+mod hooks;
 mod mode;
 
 pub use dynamic_system::config_url;

@@ -32,7 +32,7 @@ rust_library(
                     "serde_json",
                     "serde",
                     "serde_urlencoded",
-                ],
+                ] + ([] if rust_oss.is_oss_build() else ["base64"]),
                 "sl_oss": [],
             },
             "lib": {"name": "configloader"},
@@ -71,6 +71,7 @@ rust_library(
         "//eden/scm/lib/util/hgplain:hgplain",
     ] + ([] if rust_oss.is_oss_build() else [
         "//devx_www/cross_env_session_id:cross_env_session_id",
+        "fbsource//third-party/rust:base64",
         "fbsource//third-party/rust:dirs",
         "fbsource//third-party/rust:faccess",
         "fbsource//third-party/rust:filetime",
