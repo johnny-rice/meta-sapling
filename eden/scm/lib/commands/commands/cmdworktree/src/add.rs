@@ -420,6 +420,58 @@ fn display_path_bytes(bytes: &[u8]) -> String {
     escaped
 }
 
+#[expect(dead_code, reason = "wired up in a later commit in this stack")]
+/// Update destination treestate so `sl status` in the dest matches the source.
+///
+/// Only `added` and `removed` files need treestate entries. Modified, untracked,
+/// and deleted files are detected automatically by EdenFS (worktree commands
+/// require EdenFS — enforced in `lib.rs`).
+fn update_dest_treestate(dest: &Path, status: &status::Status) -> anyhow::Result<()> {
+    use treestate::filestate::FileStateV2;
+    use treestate::filestate::StateFlags;
+
+    let added: Vec<_> = status.added().collect();
+    let removed: Vec<_> = status.removed().collect();
+    if added.is_empty() && removed.is_empty() {
+        return Ok(());
+    }
+
+    let dest_repo = Repo::load(dest, &[])?;
+    let dest_wc = dest_repo.working_copy()?;
+    let dest_wc = dest_wc.read();
+    let ts = dest_wc.treestate();
+    let mut ts = ts.lock();
+
+    for path in &removed {
+        ts.insert(
+            path.as_byte_slice(),
+            &FileStateV2 {
+                mode: 0,
+                size: 0,
+                mtime: -1,
+                state: StateFlags::EXIST_P1,
+                copied: None,
+            },
+        )?;
+    }
+
+    for path in &added {
+        ts.insert(
+            path.as_byte_slice(),
+            &FileStateV2 {
+                mode: 0,
+                size: -1,
+                mtime: -1,
+                state: StateFlags::EXIST_NEXT,
+                copied: None,
+            },
+        )?;
+    }
+
+    ts.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,8 @@ sapling-hook = { version = "0.1.0", path = "../../../hook" }
 sapling-identity = { version = "0.1.0", path = "../../../identity" }
 sapling-repo = { version = "0.1.0", path = "../../../repo" }
 sapling-spawn-ext = { version = "0.1.0", path = "../../../spawn-ext" }
+sapling-status = { version = "0.1.0", path = "../../../status" }
+sapling-treestate = { version = "0.1.0", path = "../../../treestate" }
 sapling-util = { version = "0.1.0", path = "../../../util" }
 sapling-workingcopy = { version = "0.1.0", path = "../../../workingcopy" }
 sapling-worktree-registry = { version = "0.1.0", path = "../../../worktree" }
