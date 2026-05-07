@@ -143,6 +143,14 @@ impl ScubaAccessLogSample {
         self.has_authorization
     }
 
+    #[expect(
+        dead_code,
+        reason = "manifest dispatch assertions use this accessor in the next diff"
+    )]
+    pub fn manifest_type(&self) -> Option<&ManifestType> {
+        self.manifest_type.as_ref()
+    }
+
     pub fn acl_manifest_mode(&self) -> Option<&str> {
         self.acl_manifest_mode.as_deref()
     }
@@ -582,6 +590,57 @@ impl RestrictedPathsTestData {
         scenario_repo
             .restricted_paths()
             .log_access_by_path_if_restricted(&self.ctx, path, cs_id)
+            .await?;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        Ok(RestrictedPathsScenarioResult {
+            scuba_logs: deserialize_scuba_log_file(&temp_log_path)?,
+        })
+    }
+
+    /// Calls manifest-based restricted paths logging directly and returns emitted Scuba rows.
+    pub async fn observe_manifest_access(
+        &self,
+        manifest_id: ManifestId,
+        manifest_type: ManifestType,
+        cs_id: Option<ChangesetId>,
+        conditional_enforcement_acls: &[MononokeIdentity],
+    ) -> Result<RestrictedPathsScenarioResult> {
+        let temp_log_file = tempfile::NamedTempFile::new()?;
+        let temp_log_path = temp_log_file.into_temp_path().keep()?;
+
+        let groups_config: Vec<(&str, Vec<&str>)> = self
+            .groups_config
+            .iter()
+            .map(|(group, users)| (group.as_str(), users.iter().map(|u| u.as_str()).collect()))
+            .collect();
+        let acls = if !self.repo_regions_config.is_empty() {
+            let config_refs: Vec<(&str, Vec<&str>)> = self
+                .repo_regions_config
+                .iter()
+                .map(|(region, users)| {
+                    (region.as_str(), users.iter().map(|u| u.as_str()).collect())
+                })
+                .collect();
+            setup_test_acls_with_groups(config_refs, groups_config)?
+        } else {
+            default_test_acls(groups_config)?
+        };
+        let scenario_repo = setup_test_repo(
+            &self.ctx,
+            self.config_restricted_paths.clone(),
+            self.acl_manifest_mode,
+            self.use_acl_manifest,
+            self.tooling_allowlist_group.clone(),
+            acls,
+            temp_log_path.clone(),
+            conditional_enforcement_acls,
+        )
+        .await?;
+
+        scenario_repo
+            .restricted_paths()
+            .log_access_by_manifest_if_restricted(&self.ctx, manifest_id, manifest_type, cs_id)
             .await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 

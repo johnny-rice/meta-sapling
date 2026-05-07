@@ -2198,3 +2198,120 @@ async fn test_shadow_path_dispatch_omits_unrestricted_rows(fb: FacebookInit) -> 
     );
     Ok(())
 }
+
+// What it tests: Shadow manifest dispatch can run config and AclManifest sources side by side for HgAugmented manifests.
+// Expected: HgAugmented manifest rows expose source details while config remains authoritative.
+#[mononoke::fbinit_test]
+async fn test_shadow_manifest_dispatch_logs_hg_augmented_sources(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let restricted_root = NonRootMPath::new("restricted/dir")?;
+
+    let result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Shadow)
+        .with_use_acl_manifest(false)
+        .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
+        .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
+        .with_file_path_changes(vec![("restricted/dir/a", None)])
+        .build(fb)
+        .await?
+        .observe_restricted_paths_scenario(&[])
+        .await?;
+
+    // TODO(T248660053): assert the HgAugmented manifest logger emits compact
+    // config-vs-AclManifest comparison fields for Shadow mode.
+    let _ = result;
+    Ok(())
+}
+
+// What it tests: Shadow manifest dispatch emits comparison rows for AclManifest-only restrictions.
+// Expected: config aggregate fields stay unrestricted while the mismatch summary reports the restriction.
+#[mononoke::fbinit_test]
+async fn test_shadow_manifest_dispatch_logs_acl_manifest_only_restriction(
+    fb: FacebookInit,
+) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let restricted_root = NonRootMPath::new("acl_manifest_only/dir")?;
+
+    let result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Shadow)
+        .with_use_acl_manifest(false)
+        .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
+        .with_file_path_changes(vec![("acl_manifest_only/dir/a", None)])
+        .build(fb)
+        .await?
+        .observe_restricted_paths_scenario(&[])
+        .await?;
+
+    // TODO(T248660053): assert AclManifest-only restricted manifests emit
+    // comparison rows while config remains authoritative.
+    let _ = result;
+    Ok(())
+}
+
+// What it tests: Shadow manifest dispatch skips AclManifest comparison for unsupported manifest types.
+// Expected: unsupported manifest types keep config-only compact logging fields.
+#[mononoke::fbinit_test]
+async fn test_shadow_manifest_dispatch_skips_unsupported_manifest_types(
+    fb: FacebookInit,
+) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let restricted_root = NonRootMPath::new("restricted/dir")?;
+
+    let result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Shadow)
+        .with_use_acl_manifest(false)
+        .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
+        .with_acl_manifest_restricted_paths(vec![(restricted_root, restricted_acl)])
+        .with_file_path_changes(vec![("restricted/dir/a", None)])
+        .build(fb)
+        .await?
+        .observe_restricted_paths_scenario(&[])
+        .await?;
+
+    // TODO(T248660053): assert Hg, Fsnode, and ContentManifest accesses skip
+    // AclManifest comparison while preserving compact config-source manifest logs.
+    let _ = result;
+    Ok(())
+}
+
+// What it tests: Shadow manifest dispatch handles comparison-source lookup errors as logging-only data.
+// Expected: AclManifest manifest errors populate acl_manifest_error without changing request success.
+#[mononoke::fbinit_test]
+async fn test_shadow_manifest_dispatch_logs_comparison_errors(fb: FacebookInit) -> Result<()> {
+    let result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Shadow)
+        .with_use_acl_manifest(false)
+        .build(fb)
+        .await?
+        .observe_manifest_access(
+            ManifestId::from("not-a-valid-hg-augmented-manifest-id"),
+            ManifestType::HgAugmented,
+            None,
+            &[],
+        )
+        .await?;
+
+    // TODO(T248660053): inject an AclManifest manifest lookup failure and
+    // assert it is logged without failing the request.
+    let _ = result;
+    Ok(())
+}
+
+// What it tests: Shadow manifest dispatch does not log unrestricted rows.
+// Expected: no manifest row is emitted when both sources are unrestricted.
+#[mononoke::fbinit_test]
+async fn test_shadow_manifest_dispatch_omits_unrestricted_rows(fb: FacebookInit) -> Result<()> {
+    let result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Shadow)
+        .with_use_acl_manifest(false)
+        .with_file_path_changes(vec![("unrestricted/dir/a", None)])
+        .build(fb)
+        .await?
+        .observe_restricted_paths_scenario(&[])
+        .await?;
+
+    // TODO(T248660053): assert no Shadow manifest rows are emitted when config
+    // and AclManifest both report unrestricted.
+    let _ = result;
+    Ok(())
+}
