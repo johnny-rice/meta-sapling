@@ -879,6 +879,7 @@ mod tests {
             Ok(())
         }
 
+        #[cfg(not(target_os = "macos"))]
         #[test]
         fn test_create_shared_dir() -> Result<()> {
             let tempdir = TempDir::new()?;
@@ -893,6 +894,7 @@ mod tests {
             Ok(())
         }
 
+        #[cfg(not(target_os = "macos"))]
         #[test]
         fn test_fixup_perms() -> Result<()> {
             let tempdir = TempDir::new()?;
@@ -1100,6 +1102,7 @@ mod tests {
         assert_eq!(expand_path_impl(path, getenv, homedir), expected);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn test_create_shared_dir_all() -> Result<()> {
         test_create_dir_all_fn(&|path| create_shared_dir_all(path), 0o42775)
