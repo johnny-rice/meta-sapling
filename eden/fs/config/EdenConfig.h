@@ -1830,6 +1830,15 @@ class EdenConfig : private ConfigSettingManager {
       this};
 
   /**
+   * Controls whether EdenFS uses phase 8 coroutine implementations
+   * (getEntryInformation).
+   */
+  ConfigSetting<bool> enableCoroutinesPhase8{
+      "coroutines:enable-phase8",
+      false,
+      this};
+
+  /**
    * Controls whether EdenFS uses phase 3 coroutine implementations
    * (glob, predictiveGlob, and related code paths).
    */
