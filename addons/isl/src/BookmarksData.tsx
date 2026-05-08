@@ -119,25 +119,6 @@ export const remoteBookmarks = atom(get => {
   return commits.flatMap(commit => commit.remoteBookmarks);
 });
 
-/**
- * For determining if reminders to use recommended bookmarks should be shown
- */
-export const recommendedBookmarksReminder = localStorageBackedAtom<{
-  shouldShow: boolean;
-  lastShown: number;
-}>('isl.recommended-bookmarks-reminder', {
-  shouldShow: true,
-  lastShown: 0,
-});
-
-/**
- * For determining if recommended bookmarks onboarding tip should be shown
- */
-export const recommendedBookmarksOnboarding = localStorageBackedAtom<boolean>(
-  'isl.recommended-bookmarks-onboarding',
-  true,
-);
-
 export const recommendedBookmarksAtom = atom<Set<string>>(new Set<string>());
 
 /** Checks if recommended bookmarks are available in remoteBookmarks */

@@ -203,7 +203,6 @@ export type TrackEventName =
   | 'ReadWarmCommit'
   | 'RecommendedBookmarksStatus'
   | 'RecommendedBookmarksToggle'
-  | 'RecommendedBookmarksReminderResponse'
   | 'RecommendTestPlanButtonClicked'
   | 'GenerateSummaryButtonClicked'
   | 'PullFullRepoBranchOperation'

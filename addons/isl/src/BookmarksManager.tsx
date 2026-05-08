@@ -57,7 +57,7 @@ export function BookmarksManagerMenu() {
     return null;
   }
 
-  const menuButton = (
+  return (
     <Tooltip
       component={dismiss => <BookmarksManager dismiss={dismiss} />}
       trigger="click"
@@ -74,9 +74,6 @@ export function BookmarksManagerMenu() {
       </Button>
     </Tooltip>
   );
-
-  const Reminder = Internal.RecommendedBookmarkPrompt;
-  return Reminder ? <Reminder>{menuButton}</Reminder> : menuButton;
 }
 
 function BookmarksManager(_props: {dismiss: () => void}) {
