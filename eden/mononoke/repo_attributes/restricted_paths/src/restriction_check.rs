@@ -23,7 +23,6 @@ use permission_checker::MononokeIdentity;
 use crate::ManifestId;
 use crate::ManifestType;
 use crate::RestrictedPaths;
-use crate::RestrictionCheckResult;
 use crate::access_log::SourceRestrictionCheckResult;
 use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_part_of_group;
@@ -47,6 +46,17 @@ pub(crate) enum ManifestRestrictionSource {
     Config,
     /// AclManifest pointer attached to the manifest.
     AclManifest,
+}
+
+/// Result from restricted path access check — carries both authorization
+/// and restriction root info for enforcement condition evaluation.
+#[derive(Debug, Clone)]
+pub struct RestrictionCheckResult {
+    /// Whether the caller has read authorization for the restriction.
+    pub has_authorization: bool,
+    /// The restriction root paths matched by this access check.
+    /// Empty if the path is not restricted.
+    pub restriction_roots: Vec<NonRootMPath>,
 }
 
 /// Authorization flags produced by evaluating the caller against one source.

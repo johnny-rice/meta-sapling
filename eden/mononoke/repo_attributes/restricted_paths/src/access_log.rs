@@ -32,20 +32,10 @@ use crate::RestrictedPaths;
 use crate::restriction_check;
 use crate::restriction_check::ManifestRestrictionSource;
 use crate::restriction_check::PathRestrictionSource;
+use crate::restriction_check::RestrictionCheckResult;
 
 #[cfg(test)]
 mod tests;
-
-/// Result from restricted path access check — carries both authorization
-/// and restriction root info for enforcement condition evaluation.
-#[derive(Debug, Clone)]
-pub struct RestrictionCheckResult {
-    /// Whether the caller has read authorization for the restriction.
-    pub has_authorization: bool,
-    /// The restriction root paths matched by this access check.
-    /// Empty if the path is not restricted.
-    pub restriction_roots: Vec<NonRootMPath>,
-}
 
 pub const ACCESS_LOG_SCUBA_TABLE: &str = "mononoke_restricted_paths_access_test";
 
