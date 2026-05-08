@@ -419,6 +419,8 @@ pub struct CheckManifestPermissionResponse {
     #[id(2)]
     pub has_access: bool,
     /// ACL to request access through. Present when has_access is false.
+    // TODO(T248658346): change this to a vector so manifest permission
+    // responses can expose every request ACL that covers the manifest.
     #[id(3)]
     pub request_acl: Option<String>,
 }

@@ -467,18 +467,17 @@ impl SaplingRemoteApiHandler for CheckManifestPermissionHandler {
                     let restriction_ctx =
                         HgAugmentedTreeRestrictionContext::new(repo.clone(), hg_manifest_id.into())
                             .await?;
-                    let restriction_info = restriction_ctx.restriction_info().await?;
+                    let restriction_checks = restriction_ctx.restriction_check().await?;
+                    let has_access = restriction_checks
+                        .iter()
+                        .all(|check| check.has_authorization());
 
-                    // Unrestricted if None. Otherwise, check if the caller
-                    // has access to this manifest's restriction root.
-                    let has_access = restriction_info
-                        .as_ref()
-                        .map(|info| info.has_access.unwrap_or(false))
-                        .unwrap_or(true);
-
-                    let request_acl = restriction_info
-                        .as_ref()
-                        .map(|info| info.request_acl().to_string());
+                    // TODO(T248658346): change the Eden API response to return
+                    // all request ACLs instead of only the first one.
+                    let request_acl = restriction_checks
+                        .iter()
+                        .find(|check| !check.has_authorization())
+                        .map(|check| check.restriction_info().request_acl.to_string());
 
                     Ok(CheckManifestPermissionResponse {
                         manifest_id,
