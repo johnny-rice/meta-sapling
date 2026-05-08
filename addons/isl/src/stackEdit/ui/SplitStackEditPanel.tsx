@@ -73,7 +73,6 @@ export function SplitStackEditPanel() {
       <div>
         <EmptyState small>
           <T>Select a commit to split its changes.</T>
-          <br />
           <Subtle>
             <T>Or, select a range of commits to move contents among them.</T>
           </Subtle>
@@ -316,18 +315,16 @@ function SplitColumn(props: SplitColumnProps) {
 
   const body = editors.isEmpty() ? (
     <EmptyState small>
-      <Column>
-        <T>This commit is empty</T>
-        <Subtle>
-          <T>Use the left/right arrows to move files and lines of code and create new commits.</T>
-        </Subtle>
-        {canRemove ? (
-          <Button onClick={() => removeEmptyCommit(rev)}>
-            <Icon icon="trash" slot="start" />
-            <T>Remove empty commit</T>
-          </Button>
-        ) : null}
-      </Column>
+      <T>This commit is empty</T>
+      <Subtle>
+        <T>Use the left/right arrows to move files and lines of code and create new commits.</T>
+      </Subtle>
+      {canRemove ? (
+        <Button onClick={() => removeEmptyCommit(rev)}>
+          <Icon icon="trash" slot="start" />
+          <T>Remove empty commit</T>
+        </Button>
+      ) : null}
     </EmptyState>
   ) : (
     <ScrollY maxSize="calc((100vh / var(--zoom)) - var(--split-vertical-overhead))" hideBar={true}>

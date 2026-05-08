@@ -8,9 +8,5 @@
 import './EmptyState.css';
 
 export function EmptyState({children, small}: {children: React.ReactNode; small?: boolean}) {
-  return (
-    <div className={'empty-state' + (small ? ' empty-state-small' : '')}>
-      <div>{children}</div>
-    </div>
-  );
+  return <div className={'empty-state' + (small ? ' empty-state-small' : '')}>{children}</div>;
 }

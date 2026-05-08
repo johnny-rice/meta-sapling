@@ -164,9 +164,7 @@ function ISLNullState({repoError}: {repoError: RepositoryError}) {
         content = (
           <>
             <EmptyState>
-              <div>
-                <T>No folder opened</T>
-              </div>
+              <T>No folder opened</T>
               <p>
                 <T>Open a folder to get started.</T>
               </p>
@@ -177,9 +175,7 @@ function ISLNullState({repoError}: {repoError: RepositoryError}) {
         content = (
           <>
             <EmptyState>
-              <div>
-                <T>Not a valid repository</T>
-              </div>
+              <T>Not a valid repository</T>
               <p>
                 <T replace={{$cwd: <code>{repoError.cwd}</code>}}>
                   $cwd is not a valid Sapling repository. Clone or init a repository to use ISL.

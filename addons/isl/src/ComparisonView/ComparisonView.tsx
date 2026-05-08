@@ -107,9 +107,8 @@ export default function ComparisonView({
       comparison.type === ComparisonType.SinceLastCodeReviewSubmit ? (
         <EmptyState>
           <T>No Content Changes</T>
-          <br />
           <Subtle>
-            <T> This commit might have been rebased</T>
+            <T>This commit might have been rebased</T>
           </Subtle>
         </EmptyState>
       ) : (
