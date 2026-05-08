@@ -64,8 +64,8 @@ pub struct ManifestRestrictionInfo {
     pub request_acl: String,
 }
 
-/// Get exact config-backed restriction info for one or more paths.
-pub(crate) fn get_exact_path_restriction_from_config(
+/// Get config-backed restriction info for paths that are themselves restriction roots.
+pub(crate) fn get_path_restriction_root_info_from_config(
     restricted_paths: &RestrictedPaths,
     paths: &[NonRootMPath],
 ) -> Vec<PathRestrictionInfo> {
@@ -112,8 +112,8 @@ pub(crate) fn find_restricted_descendants_from_config(
     results
 }
 
-/// Get exact AclManifest restriction info for one or more paths.
-pub(crate) async fn get_exact_path_restriction_from_acl_manifest(
+/// Get AclManifest restriction info for paths that are themselves restriction roots.
+pub(crate) async fn get_path_restriction_root_info_from_acl_manifest(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,
     cs_id: ChangesetId,
@@ -212,15 +212,15 @@ pub(crate) fn get_config_acls_for_paths<'a>(
         .collect()
 }
 
-/// Get exact path restriction info for one or more paths.
-pub(crate) async fn get_exact_path_restriction(
+/// Get restriction info for paths that are themselves restriction roots.
+pub(crate) async fn get_path_restriction_root_info(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,
     cs_id: Option<ChangesetId>,
     paths: &[NonRootMPath],
 ) -> Result<Vec<PathRestrictionInfo>> {
     if !restricted_paths.use_acl_manifest() {
-        return Ok(get_exact_path_restriction_from_config(
+        return Ok(get_path_restriction_root_info_from_config(
             restricted_paths,
             paths,
         ));
@@ -228,7 +228,7 @@ pub(crate) async fn get_exact_path_restriction(
 
     let cs_id =
         cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
-    get_exact_path_restriction_from_acl_manifest(restricted_paths, ctx, cs_id, paths).await
+    get_path_restriction_root_info_from_acl_manifest(restricted_paths, ctx, cs_id, paths).await
 }
 
 /// Get restriction info for one or more paths, considering ancestor restrictions.
@@ -257,7 +257,7 @@ pub(crate) async fn is_restriction_root(
     cs_id: Option<ChangesetId>,
     path: &NonRootMPath,
 ) -> Result<bool> {
-    get_exact_path_restriction(restricted_paths, ctx, cs_id, std::slice::from_ref(path))
+    get_path_restriction_root_info(restricted_paths, ctx, cs_id, std::slice::from_ref(path))
         .await
         .map(|result| !result.is_empty())
 }

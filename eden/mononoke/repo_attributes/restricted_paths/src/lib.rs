@@ -40,6 +40,8 @@ pub use crate::access_log::ACCESS_LOG_SCUBA_TABLE;
 pub use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_member_of_groups;
 use crate::access_log::log_access_to_restricted_path;
+pub use crate::restriction_check::ManifestRestrictionCheckResult;
+pub use crate::restriction_check::PathRestrictionCheckResult;
 pub use crate::restriction_check::RestrictionCheckResult;
 pub use crate::restriction_info::ManifestRestrictionInfo;
 pub use crate::restriction_info::PathRestrictionInfo;
@@ -161,15 +163,15 @@ impl RestrictedPaths {
     // Public restriction lookup methods
     // -----------------------------------------------------------------------
 
-    /// Get exact path restriction info for one or more paths.
-    /// Does NOT consider parent directories — only exact matches.
-    pub async fn get_exact_path_restriction(
+    /// Get restriction info for paths that are themselves restriction roots.
+    /// Does NOT consider parent directories.
+    pub async fn get_path_restriction_root_info(
         &self,
         ctx: &CoreContext,
         cs_id: Option<ChangesetId>,
         paths: &[NonRootMPath],
     ) -> Result<Vec<PathRestrictionInfo>> {
-        restriction_info::get_exact_path_restriction(self, ctx, cs_id, paths).await
+        restriction_info::get_path_restriction_root_info(self, ctx, cs_id, paths).await
     }
 
     /// Get restriction info for one or more paths, considering ancestor restrictions.
@@ -181,6 +183,45 @@ impl RestrictedPaths {
         paths: &[NonRootMPath],
     ) -> Result<Vec<PathRestrictionInfo>> {
         restriction_info::get_path_restriction_info(self, ctx, cs_id, paths).await
+    }
+
+    /// Get restriction and authorization checks for paths that are themselves restriction roots.
+    /// Does NOT consider parent directories.
+    pub async fn get_path_restriction_root_check(
+        &self,
+        ctx: &CoreContext,
+        cs_id: Option<ChangesetId>,
+        paths: &[NonRootMPath],
+    ) -> Result<Vec<PathRestrictionCheckResult>> {
+        restriction_check::get_path_restriction_root_check(self, ctx, cs_id, paths).await
+    }
+
+    /// Get restriction and authorization checks for one or more paths,
+    /// considering ancestor restrictions.
+    pub async fn get_path_restriction_check(
+        &self,
+        ctx: &CoreContext,
+        cs_id: Option<ChangesetId>,
+        paths: &[NonRootMPath],
+    ) -> Result<Vec<PathRestrictionCheckResult>> {
+        restriction_check::get_path_restriction_check(self, ctx, cs_id, paths).await
+    }
+
+    /// Get manifest restriction and authorization checks from the config-backed source.
+    pub async fn get_manifest_restriction_check(
+        &self,
+        ctx: &CoreContext,
+        manifest_id: &ManifestId,
+        manifest_type: &ManifestType,
+    ) -> Result<Vec<ManifestRestrictionCheckResult>> {
+        restriction_check::get_manifest_restriction_check(
+            self,
+            ctx,
+            manifest_id,
+            manifest_type,
+            restriction_check::ManifestRestrictionSource::Config,
+        )
+        .await
     }
 
     /// Check if a path is itself a restriction root (exact match).
@@ -647,7 +688,7 @@ mod tests {
         let test_path = NonRootMPath::new("test/path")?;
         assert!(
             repo_restricted_paths
-                .get_exact_path_restriction(&ctx, Some(cs_id), &[test_path])
+                .get_path_restriction_root_info(&ctx, Some(cs_id), &[test_path])
                 .await?
                 .is_empty()
         );
@@ -715,7 +756,7 @@ mod tests {
         // Test exact match
         let exact_path = NonRootMPath::new("restricted/dir")?;
         let results = repo_restricted_paths
-            .get_exact_path_restriction(&ctx, Some(cs_id), &[exact_path])
+            .get_path_restriction_root_info(&ctx, Some(cs_id), &[exact_path])
             .await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].repo_region_acl, restricted_acl.to_string());
@@ -724,7 +765,7 @@ mod tests {
         let sub_path = NonRootMPath::new("restricted/dir/subdir/file.txt")?;
         assert!(
             repo_restricted_paths
-                .get_exact_path_restriction(&ctx, Some(cs_id), &[sub_path])
+                .get_path_restriction_root_info(&ctx, Some(cs_id), &[sub_path])
                 .await?
                 .is_empty()
         );
@@ -733,7 +774,7 @@ mod tests {
         let other_path = NonRootMPath::new("other/dir/file.txt")?;
         assert!(
             repo_restricted_paths
-                .get_exact_path_restriction(&ctx, Some(cs_id), &[other_path])
+                .get_path_restriction_root_info(&ctx, Some(cs_id), &[other_path])
                 .await?
                 .is_empty()
         );
@@ -742,7 +783,7 @@ mod tests {
         let partial_path = NonRootMPath::new("restricted/different")?;
         assert!(
             repo_restricted_paths
-                .get_exact_path_restriction(&ctx, Some(cs_id), &[partial_path])
+                .get_path_restriction_root_info(&ctx, Some(cs_id), &[partial_path])
                 .await?
                 .is_empty()
         );
@@ -751,7 +792,7 @@ mod tests {
         let partial_path = NonRootMPath::new("restricted/di")?;
         assert!(
             repo_restricted_paths
-                .get_exact_path_restriction(&ctx, Some(cs_id), &[partial_path])
+                .get_path_restriction_root_info(&ctx, Some(cs_id), &[partial_path])
                 .await?
                 .is_empty()
         );

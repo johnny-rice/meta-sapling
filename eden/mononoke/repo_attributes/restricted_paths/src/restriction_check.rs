@@ -14,7 +14,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use context::CoreContext;
-use futures::future;
+use futures::StreamExt;
+use futures::TryStreamExt;
+use futures::stream;
 use mononoke_types::ChangesetId;
 use mononoke_types::NonRootMPath;
 use permission_checker::AclProvider;
@@ -70,6 +72,23 @@ pub(crate) struct AuthorizationCheckResult {
     is_rollout_allowlisted: bool,
 }
 
+/// Allowlist authorization shared by every restriction in one source batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AllowlistAuthorization {
+    is_allowlisted_tooling: bool,
+    is_rollout_allowlisted: bool,
+}
+
+impl AllowlistAuthorization {
+    fn into_authorization_check_result(self, has_acl_access: bool) -> AuthorizationCheckResult {
+        AuthorizationCheckResult {
+            has_acl_access,
+            is_allowlisted_tooling: self.is_allowlisted_tooling,
+            is_rollout_allowlisted: self.is_rollout_allowlisted,
+        }
+    }
+}
+
 impl AuthorizationCheckResult {
     /// Whether the caller has read authorization through ACLs or allowlists.
     pub(crate) fn has_authorization(&self) -> bool {
@@ -89,6 +108,69 @@ impl AuthorizationCheckResult {
     }
 }
 
+/// Path restriction information paired with the caller's authorization result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathRestrictionCheckResult {
+    restriction_info: PathRestrictionInfo,
+    authorization: AuthorizationCheckResult,
+}
+
+impl PathRestrictionCheckResult {
+    pub(crate) fn new(
+        restriction_info: PathRestrictionInfo,
+        authorization: AuthorizationCheckResult,
+    ) -> Self {
+        Self {
+            restriction_info,
+            authorization,
+        }
+    }
+
+    /// Restriction information for the checked path.
+    pub fn restriction_info(&self) -> &PathRestrictionInfo {
+        &self.restriction_info
+    }
+
+    /// Whether the caller has read authorization through ACLs or allowlists.
+    pub fn has_authorization(&self) -> bool {
+        self.authorization.has_authorization()
+    }
+
+    /// Consume this result and return the restriction information.
+    pub fn into_restriction_info(self) -> PathRestrictionInfo {
+        self.restriction_info
+    }
+}
+
+/// Manifest restriction information paired with the caller's authorization result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ManifestRestrictionCheckResult {
+    restriction_info: ManifestRestrictionInfo,
+    authorization: AuthorizationCheckResult,
+}
+
+impl ManifestRestrictionCheckResult {
+    pub(crate) fn new(
+        restriction_info: ManifestRestrictionInfo,
+        authorization: AuthorizationCheckResult,
+    ) -> Self {
+        Self {
+            restriction_info,
+            authorization,
+        }
+    }
+
+    /// Restriction information for the checked manifest.
+    pub fn restriction_info(&self) -> &ManifestRestrictionInfo {
+        &self.restriction_info
+    }
+
+    /// Whether the caller has read authorization through ACLs or allowlists.
+    pub fn has_authorization(&self) -> bool {
+        self.authorization.has_authorization()
+    }
+}
+
 /// Evaluate ACL and allowlist authorization for a restricted-path access.
 pub(crate) async fn check_authorization(
     ctx: &CoreContext,
@@ -97,23 +179,55 @@ pub(crate) async fn check_authorization(
     tooling_allowlist_group: Option<&str>,
     rollout_allowlist_group: Option<&str>,
 ) -> Result<AuthorizationCheckResult> {
+    let allowlist_authorization = check_allowlist_authorization(
+        ctx,
+        acl_provider,
+        tooling_allowlist_group,
+        rollout_allowlist_group,
+    )
+    .await?;
     let has_acl_access = has_read_access_to_repo_region_acls(ctx, acl_provider, acls).await?;
-    let is_allowlisted_tooling = tooling_allowlist_group
-        .map_or(future::Either::Left(future::ok(false)), |group_name| {
-            future::Either::Right(is_part_of_group(ctx, acl_provider, group_name))
-        })
-        .await?;
-    let is_rollout_allowlisted = rollout_allowlist_group
-        .map_or(future::Either::Left(future::ok(false)), |group_name| {
-            future::Either::Right(is_part_of_group(ctx, acl_provider, group_name))
-        })
-        .await?;
+    Ok(allowlist_authorization.into_authorization_check_result(has_acl_access))
+}
 
-    Ok(AuthorizationCheckResult {
-        has_acl_access,
+async fn check_restricted_paths_allowlist_authorization(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+) -> Result<AllowlistAuthorization> {
+    check_allowlist_authorization(
+        ctx,
+        restricted_paths.acl_provider(),
+        restricted_paths.config().tooling_allowlist_group.as_deref(),
+        restricted_paths.config().rollout_allowlist_group.as_deref(),
+    )
+    .await
+}
+
+async fn check_allowlist_authorization(
+    ctx: &CoreContext,
+    acl_provider: &Arc<dyn AclProvider>,
+    tooling_allowlist_group: Option<&str>,
+    rollout_allowlist_group: Option<&str>,
+) -> Result<AllowlistAuthorization> {
+    let (is_allowlisted_tooling, is_rollout_allowlisted) = tokio::try_join!(
+        check_optional_allowlist_group(ctx, acl_provider, tooling_allowlist_group),
+        check_optional_allowlist_group(ctx, acl_provider, rollout_allowlist_group),
+    )?;
+    Ok(AllowlistAuthorization {
         is_allowlisted_tooling,
         is_rollout_allowlisted,
     })
+}
+
+async fn check_optional_allowlist_group(
+    ctx: &CoreContext,
+    acl_provider: &Arc<dyn AclProvider>,
+    group_name: Option<&str>,
+) -> Result<bool> {
+    match group_name {
+        Some(group_name) => is_part_of_group(ctx, acl_provider, group_name).await,
+        None => Ok(false),
+    }
 }
 
 /// Build the legacy restricted-path check result shape.
@@ -125,6 +239,64 @@ pub(crate) fn build_restriction_check_result(
         has_authorization,
         restriction_roots,
     }
+}
+
+/// Check restriction-root paths and authorization for one or more paths.
+pub(crate) async fn get_path_restriction_root_check(
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    paths: &[NonRootMPath],
+) -> Result<Vec<PathRestrictionCheckResult>> {
+    let restriction_info =
+        restriction_info::get_path_restriction_root_info(restricted_paths, ctx, cs_id, paths)
+            .await?;
+    check_path_restriction_infos(ctx, restricted_paths, restriction_info).await
+}
+
+/// Check ancestor path restrictions and authorization for one or more paths.
+pub(crate) async fn get_path_restriction_check(
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    paths: &[NonRootMPath],
+) -> Result<Vec<PathRestrictionCheckResult>> {
+    let restriction_info =
+        restriction_info::get_path_restriction_info(restricted_paths, ctx, cs_id, paths).await?;
+    check_path_restriction_infos(ctx, restricted_paths, restriction_info).await
+}
+
+/// Check manifest restrictions and authorization for one manifest source.
+pub(crate) async fn get_manifest_restriction_check(
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    manifest_id: &ManifestId,
+    manifest_type: &ManifestType,
+    source: ManifestRestrictionSource,
+) -> Result<Vec<ManifestRestrictionCheckResult>> {
+    let restriction_info = match source {
+        ManifestRestrictionSource::Config => {
+            restriction_info::get_manifest_restriction_info_from_config(
+                restricted_paths,
+                ctx,
+                manifest_id,
+                manifest_type,
+            )
+            .await
+            .context("find config restrictions for manifest-side check")?
+        }
+        ManifestRestrictionSource::AclManifest => {
+            restriction_info::get_manifest_restriction_info_from_acl_manifest(
+                restricted_paths,
+                ctx,
+                manifest_id,
+                manifest_type,
+            )
+            .await
+            .context("find AclManifest restrictions for manifest-side check")?
+        }
+    };
+    check_manifest_restriction_infos(ctx, restricted_paths, restriction_info).await
 }
 
 /// Check a path against one restriction source.
@@ -211,6 +383,89 @@ async fn check_config_path_authorization(
         .unzip();
 
     check_path_authorization(ctx, restricted_paths, restriction_info, restriction_acls).await
+}
+
+async fn check_path_restriction_infos(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    restriction_info: Vec<PathRestrictionInfo>,
+) -> Result<Vec<PathRestrictionCheckResult>> {
+    if restriction_info.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let allowlist_authorization =
+        check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
+    stream::iter(restriction_info)
+        .map(|restriction_info| async move {
+            let authorization = check_restriction_authorization(
+                ctx,
+                restricted_paths,
+                &restriction_info.repo_region_acl,
+                allowlist_authorization,
+            )
+            .await?;
+            Ok(PathRestrictionCheckResult::new(
+                restriction_info,
+                authorization,
+            ))
+        })
+        .buffered(100)
+        .try_collect()
+        .await
+}
+
+async fn check_manifest_restriction_infos(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    restriction_info: Vec<ManifestRestrictionInfo>,
+) -> Result<Vec<ManifestRestrictionCheckResult>> {
+    if restriction_info.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let allowlist_authorization =
+        check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
+    stream::iter(restriction_info)
+        .map(|restriction_info| async move {
+            let authorization = check_restriction_authorization(
+                ctx,
+                restricted_paths,
+                &restriction_info.repo_region_acl,
+                allowlist_authorization,
+            )
+            .await?;
+            Ok(ManifestRestrictionCheckResult::new(
+                restriction_info,
+                authorization,
+            ))
+        })
+        .buffered(100)
+        .try_collect()
+        .await
+}
+
+async fn check_restriction_authorization(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    repo_region_acl: &str,
+    allowlist_authorization: AllowlistAuthorization,
+) -> Result<AuthorizationCheckResult> {
+    let acl = MononokeIdentity::from_str(repo_region_acl)
+        .with_context(|| format!("Failed to parse repo_region_acl {repo_region_acl}"))?;
+    check_restriction_authorization_with_acl(ctx, restricted_paths, &acl, allowlist_authorization)
+        .await
+}
+
+async fn check_restriction_authorization_with_acl(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    acl: &MononokeIdentity,
+    allowlist_authorization: AllowlistAuthorization,
+) -> Result<AuthorizationCheckResult> {
+    let has_acl_access =
+        has_read_access_to_repo_region_acls(ctx, restricted_paths.acl_provider(), &[acl]).await?;
+    Ok(allowlist_authorization.into_authorization_check_result(has_acl_access))
 }
 
 async fn check_path_authorization(

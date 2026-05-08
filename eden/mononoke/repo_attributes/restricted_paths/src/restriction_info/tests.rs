@@ -42,9 +42,9 @@ use tests_utils::CreateCommitContext;
 use super::ManifestRestrictionInfo;
 use super::PathRestrictionInfo;
 use super::find_restricted_descendants_from_acl_manifest;
-use super::get_exact_path_restriction_from_acl_manifest;
 use super::get_manifest_restriction_info_from_acl_manifest;
 use super::get_path_restriction_info_from_acl_manifest;
+use super::get_path_restriction_root_info_from_acl_manifest;
 use crate::ManifestId;
 use crate::ManifestType;
 use crate::RestrictedPaths;
@@ -92,7 +92,7 @@ mod acl_manifest_path_lookup {
             ],
         )
         .await?;
-        let results = get_exact_path_restriction_from_acl_manifest(
+        let results = get_path_restriction_root_info_from_acl_manifest(
             &fixture.restricted_paths,
             &fixture.ctx,
             fixture.cs_id,
