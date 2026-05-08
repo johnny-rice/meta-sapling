@@ -13,10 +13,11 @@ import type {Hash} from './types';
 import {Button} from 'isl-components/Button';
 import {ErrorNotice} from 'isl-components/ErrorNotice';
 import {ErrorShortMessages} from 'isl-server/src/constants';
-import {atom, useAtomValue} from 'jotai';
+import {atom, useAtomValue, useSetAtom} from 'jotai';
 import {Commit, InlineProgressSpan} from './Commit';
 import {commitTreeSearchFilter} from './CommitTreeSearchFilter';
 import {Center, LargeSpinner} from './ComponentUtils';
+import {EmptyState} from './EmptyState';
 import {FetchingAdditionalCommitsRow} from './FetchAdditionalCommitsButton';
 import {isHighlightedCommit} from './HighlightedCommits';
 import {RegularGlyph, RenderDag, YouAreHereGlyph} from './RenderDag';
@@ -100,6 +101,34 @@ function DagCommitList(props: DagCommitListProps) {
 
   const dag = useAtomValue(dagWithYouAreHere);
   const subset = useAtomValue(renderSubsetUnionSelection);
+  const searchFilter = useAtomValue(commitTreeSearchFilter);
+  const setSearchFilter = useSetAtom(commitTreeSearchFilter);
+
+  // Check if filter is active and no commits (excluding "You are here") match
+  const filter = searchFilter.trim().toLowerCase();
+  let hasNoResults = false;
+  if (filter.length > 0) {
+    let hasMatchingCommit = false;
+    for (const hash of subset) {
+      const commit = dag.get(hash);
+      if (commit && !commit.isYouAreHere) {
+        hasMatchingCommit = true;
+        break;
+      }
+    }
+    hasNoResults = !hasMatchingCommit;
+  }
+
+  if (hasNoResults) {
+    return (
+      <EmptyState>
+        <T>No commits match your filter</T>
+        <Button onClick={() => setSearchFilter('')}>
+          <T>Clear filter</T>
+        </Button>
+      </EmptyState>
+    );
+  }
 
   return (
     <RenderDag
