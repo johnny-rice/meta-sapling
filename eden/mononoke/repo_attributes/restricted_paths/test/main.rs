@@ -2217,9 +2217,19 @@ async fn test_shadow_manifest_dispatch_logs_hg_augmented_sources(fb: FacebookIni
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert the HgAugmented manifest logger emits compact
-    // config-vs-AclManifest comparison fields for Shadow mode.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.manifest_type() == Some(&ManifestType::HgAugmented)
+                && log.acl_manifest_mode() == Some("shadow")
+                && !log.has_authorization()
+                && log.shadow_mismatch() == Some(false)
+                && log.shadow_mismatch_detail().is_some()
+                && log.considered_restricted_by()
+                    == ["acl_manifest".to_string(), "manifest_db".to_string()]
+        }),
+        "expected an HgAugmented Shadow manifest row with compact comparison fields: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2230,21 +2240,33 @@ async fn test_shadow_manifest_dispatch_logs_acl_manifest_only_restriction(
     fb: FacebookInit,
 ) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
-    let restricted_root = NonRootMPath::new("acl_manifest_only/dir")?;
+    let restricted_root = NonRootMPath::new("restricted/dir")?;
+    let manifest_id = ManifestId::from("341074482e5d30e3afb06cb4c89e758821073296");
 
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
         .with_use_acl_manifest(false)
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
-        .with_file_path_changes(vec![("acl_manifest_only/dir/a", None)])
+        .with_file_path_changes(vec![("restricted/dir/a", None)])
         .build(fb)
         .await?
-        .observe_restricted_paths_scenario(&[])
+        .observe_manifest_access(manifest_id.clone(), ManifestType::HgAugmented, None, &[])
         .await?;
 
-    // TODO(T248660053): assert AclManifest-only restricted manifests emit
-    // comparison rows while config remains authoritative.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.manifest_type() == Some(&ManifestType::HgAugmented)
+                && log.manifest_id() == Some(&manifest_id)
+                && log.acl_manifest_mode() == Some("shadow")
+                && log.has_authorization()
+                && log.acl_manifest_error().is_none()
+                && log.shadow_mismatch() == Some(true)
+                && log.shadow_mismatch_detail().is_some()
+                && log.considered_restricted_by() == ["acl_manifest".to_string()]
+        }),
+        "expected an AclManifest-only Shadow manifest comparison row: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2268,14 +2290,31 @@ async fn test_shadow_manifest_dispatch_skips_unsupported_manifest_types(
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert Hg, Fsnode, and ContentManifest accesses skip
-    // AclManifest comparison while preserving compact config-source manifest logs.
-    let _ = result;
+    for manifest_type in [
+        ManifestType::Hg,
+        ManifestType::Fsnode,
+        ManifestType::ContentManifest,
+    ] {
+        assert!(
+            result.scuba_logs.iter().any(|log| {
+                log.manifest_type() == Some(&manifest_type)
+                    && log.acl_manifest_mode() == Some("shadow")
+                    && !log.has_authorization()
+                    && log.acl_manifest_error().is_none()
+                    && log.shadow_mismatch() == Some(false)
+                    && log.shadow_mismatch_detail().is_none()
+                    && log.considered_restricted_by() == ["manifest_db".to_string()]
+            }),
+            "expected unsupported manifest type {manifest_type:?} to skip AclManifest comparison: {:#?}",
+            result.scuba_logs
+        );
+    }
     Ok(())
 }
 
 // What it tests: Shadow manifest dispatch handles comparison-source lookup errors as logging-only data.
-// Expected: AclManifest manifest errors populate acl_manifest_error without changing request success.
+// Expected: AclManifest manifest errors populate acl_manifest_error and mark the row for
+// investigation without changing request success.
 #[mononoke::fbinit_test]
 async fn test_shadow_manifest_dispatch_logs_comparison_errors(fb: FacebookInit) -> Result<()> {
     let result = RestrictedPathsTestDataBuilder::new()
@@ -2291,9 +2330,19 @@ async fn test_shadow_manifest_dispatch_logs_comparison_errors(fb: FacebookInit) 
         )
         .await?;
 
-    // TODO(T248660053): inject an AclManifest manifest lookup failure and
-    // assert it is logged without failing the request.
-    let _ = result;
+    assert!(
+        result.scuba_logs.iter().any(|log| {
+            log.manifest_type() == Some(&ManifestType::HgAugmented)
+                && log.acl_manifest_mode() == Some("shadow")
+                && log.has_authorization()
+                && log.acl_manifest_error().is_some()
+                && log.shadow_mismatch() == Some(true)
+                && log.shadow_mismatch_detail().is_some()
+                && log.considered_restricted_by().is_empty()
+        }),
+        "expected Shadow manifest logging to capture AclManifest comparison errors: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }
 
@@ -2310,8 +2359,10 @@ async fn test_shadow_manifest_dispatch_omits_unrestricted_rows(fb: FacebookInit)
         .observe_restricted_paths_scenario(&[])
         .await?;
 
-    // TODO(T248660053): assert no Shadow manifest rows are emitted when config
-    // and AclManifest both report unrestricted.
-    let _ = result;
+    assert!(
+        result.scuba_logs.is_empty(),
+        "expected no Shadow rows for unrestricted manifest accesses: {:#?}",
+        result.scuba_logs
+    );
     Ok(())
 }

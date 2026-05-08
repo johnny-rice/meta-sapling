@@ -28,6 +28,7 @@ use crate::access_log::SourceRestrictionCheckResult;
 use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_part_of_group;
 use crate::restriction_info;
+use crate::restriction_info::ManifestRestrictionInfo;
 use crate::restriction_info::PathRestrictionInfo;
 
 /// Source to use for path-side restriction checks.
@@ -40,7 +41,6 @@ pub(crate) enum PathRestrictionSource {
 }
 
 /// Source to use for manifest-side restriction checks.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ManifestRestrictionSource {
     /// Config-backed manifest-id store.
@@ -133,15 +133,36 @@ pub(crate) async fn check_path_restriction(
 }
 
 /// Check a manifest against one restriction source.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn check_manifest_restriction(
-    _ctx: &CoreContext,
-    _restricted_paths: &RestrictedPaths,
-    _manifest_id: ManifestId,
-    _manifest_type: ManifestType,
-    _source: ManifestRestrictionSource,
-) -> Result<RestrictionCheckResult> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    manifest_id: ManifestId,
+    manifest_type: ManifestType,
+    source: ManifestRestrictionSource,
+) -> Result<SourceRestrictionCheckResult> {
+    let restriction_info = match source {
+        ManifestRestrictionSource::Config => {
+            restriction_info::get_manifest_restriction_info_from_config(
+                restricted_paths,
+                ctx,
+                &manifest_id,
+                &manifest_type,
+            )
+            .await
+            .context("find config restrictions for manifest-side fetch")?
+        }
+        ManifestRestrictionSource::AclManifest => {
+            restriction_info::get_manifest_restriction_info_from_acl_manifest(
+                restricted_paths,
+                ctx,
+                &manifest_id,
+                &manifest_type,
+            )
+            .await
+            .context("find AclManifest restrictions for manifest-side fetch")?
+        }
+    };
+    check_manifest_authorization(ctx, restricted_paths, restriction_info).await
 }
 
 async fn check_config_path_authorization(
@@ -215,4 +236,50 @@ fn parse_restriction_acls(
             })
         })
         .collect()
+}
+
+async fn check_manifest_authorization(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    restriction_info: Vec<ManifestRestrictionInfo>,
+) -> Result<SourceRestrictionCheckResult> {
+    if restriction_info.is_empty() {
+        return Ok(SourceRestrictionCheckResult::unrestricted(Some(vec![])));
+    }
+
+    let restriction_acls = restriction_info
+        .iter()
+        .map(|info| {
+            MononokeIdentity::from_str(&info.repo_region_acl).with_context(|| {
+                format!("Failed to parse repo_region_acl {}", info.repo_region_acl)
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let matched_restriction_paths = restriction_info
+        .iter()
+        .filter_map(|info| info.restriction_root.clone())
+        .collect::<Vec<_>>();
+    let matched_restriction_paths = if matched_restriction_paths.is_empty() {
+        None
+    } else {
+        Some(matched_restriction_paths)
+    };
+    let acl_refs = restriction_acls.iter().collect::<Vec<_>>();
+    let authorization = check_authorization(
+        ctx,
+        restricted_paths.acl_provider(),
+        &acl_refs,
+        restricted_paths.config().tooling_allowlist_group.as_deref(),
+        restricted_paths.config().rollout_allowlist_group.as_deref(),
+    )
+    .await?;
+
+    Ok(SourceRestrictionCheckResult::new(
+        authorization.has_authorization(),
+        authorization.has_acl_access,
+        restriction_acls,
+        matched_restriction_paths,
+        authorization.is_allowlisted_tooling,
+        authorization.is_rollout_allowlisted,
+    ))
 }

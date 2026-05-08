@@ -268,7 +268,6 @@ pub(crate) async fn find_restricted_descendants(
 }
 
 /// Lookup restriction info for a manifest access through the config-backed source.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn get_manifest_restriction_info_from_config(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,
@@ -301,13 +300,6 @@ pub(crate) async fn get_manifest_restriction_info_from_config(
 }
 
 /// Lookup restriction info for a manifest access through the AclManifest source.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "implemented before Shadow logging wires this source"
-    )
-)]
 pub(crate) async fn get_manifest_restriction_info_from_acl_manifest(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,

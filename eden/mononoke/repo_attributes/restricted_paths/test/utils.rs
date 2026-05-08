@@ -143,12 +143,12 @@ impl ScubaAccessLogSample {
         self.has_authorization
     }
 
-    #[expect(
-        dead_code,
-        reason = "manifest dispatch assertions use this accessor in the next diff"
-    )]
     pub fn manifest_type(&self) -> Option<&ManifestType> {
         self.manifest_type.as_ref()
+    }
+
+    pub fn manifest_id(&self) -> Option<&ManifestId> {
+        self.manifest_id.as_ref()
     }
 
     pub fn acl_manifest_mode(&self) -> Option<&str> {
@@ -637,6 +637,24 @@ impl RestrictedPathsTestData {
             conditional_enforcement_acls,
         )
         .await?;
+
+        let mut commit_ctx = CreateCommitContext::new_root(&self.ctx, &scenario_repo);
+        for (path, content) in &self.file_path_changes {
+            let file_content = content.as_deref().unwrap_or(path.as_str());
+            commit_ctx = commit_ctx.add_file(path.as_str(), file_content.to_string());
+        }
+        for (root, acl) in &self.acl_manifest_restricted_paths {
+            let slacl_path = format!("{}/.slacl", root);
+            let slacl_content = format!("repo_region_acl = \"{}\"\n", acl);
+            commit_ctx = commit_ctx.add_file(slacl_path.as_str(), slacl_content);
+        }
+        let bcs_id = commit_ctx.commit().await?;
+        scenario_repo.derive_hg_changeset(&self.ctx, bcs_id).await?;
+        scenario_repo
+            .repo_derived_data()
+            .derive::<RootHgAugmentedManifestId>(&self.ctx, bcs_id, DerivationPriority::LOW)
+            .await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         scenario_repo
             .restricted_paths()

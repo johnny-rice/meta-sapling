@@ -16,6 +16,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream;
 use metaconfig_types::AclManifestMode;
+use mononoke_types::ChangesetId;
 use mononoke_types::NonRootMPath;
 use mononoke_types::RepositoryId;
 use permission_checker::AclProvider;
@@ -27,7 +28,10 @@ use serde_json::json;
 
 use crate::ManifestId;
 use crate::ManifestType;
+use crate::RestrictedPaths;
 use crate::restriction_check;
+use crate::restriction_check::ManifestRestrictionSource;
+use crate::restriction_check::PathRestrictionSource;
 
 #[cfg(test)]
 mod tests;
@@ -240,6 +244,121 @@ pub async fn is_part_of_group(
         .await)
 }
 
+pub(crate) async fn log_shadow_access_by_manifest_if_restricted(
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    manifest_id: ManifestId,
+    manifest_type: ManifestType,
+) -> Result<RestrictionCheckResult> {
+    let config_result = source_result(
+        restriction_check::check_manifest_restriction(
+            ctx,
+            restricted_paths,
+            manifest_id.clone(),
+            manifest_type.clone(),
+            ManifestRestrictionSource::Config,
+        )
+        .await,
+    );
+    let acl_manifest_result = if manifest_type == ManifestType::HgAugmented {
+        Some(source_result(
+            restriction_check::check_manifest_restriction(
+                ctx,
+                restricted_paths,
+                manifest_id.clone(),
+                manifest_type.clone(),
+                ManifestRestrictionSource::AclManifest,
+            )
+            .await,
+        ))
+    } else {
+        None
+    };
+
+    let log_result = log_source_results_to_scuba(
+        ctx,
+        restricted_paths.config_based.manifest_id_store().repo_id(),
+        &config_result,
+        acl_manifest_result.as_ref(),
+        AclManifestMode::Shadow,
+        RestrictedPathAccessData::Manifest(manifest_id, manifest_type),
+        restricted_paths.scuba.clone(),
+    );
+
+    let config = match config_result {
+        Ok(config) => {
+            log_result?;
+            config
+        }
+        Err(err) => {
+            return match Arc::try_unwrap(err) {
+                Ok(err) => Err(err),
+                Err(err) => Err(anyhow::anyhow!("{:#}", err)),
+            };
+        }
+    };
+    Ok(RestrictionCheckResult {
+        has_authorization: config.has_authorization,
+        restriction_roots: config.restriction_paths.clone().unwrap_or_default(),
+    })
+}
+
+pub(crate) async fn log_shadow_access_by_path_if_restricted(
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    path: NonRootMPath,
+    cs_id: Option<ChangesetId>,
+) -> Result<RestrictionCheckResult> {
+    let config_result = source_result(
+        restriction_check::check_path_restriction(
+            ctx,
+            restricted_paths,
+            path.clone(),
+            PathRestrictionSource::Config,
+        )
+        .await,
+    );
+    let acl_manifest_result = match cs_id {
+        Some(cs_id) => Some(source_result(
+            restriction_check::check_path_restriction(
+                ctx,
+                restricted_paths,
+                path.clone(),
+                PathRestrictionSource::AclManifest(cs_id),
+            )
+            .await,
+        )),
+        None => None,
+    };
+
+    let log_result = log_source_results_to_scuba(
+        ctx,
+        restricted_paths.config_based.manifest_id_store().repo_id(),
+        &config_result,
+        acl_manifest_result.as_ref(),
+        AclManifestMode::Shadow,
+        RestrictedPathAccessData::FullPath { full_path: path },
+        restricted_paths.scuba.clone(),
+    );
+
+    let config = match config_result {
+        Ok(config) => {
+            log_result?;
+            config
+        }
+        Err(err) => {
+            return match Arc::try_unwrap(err) {
+                Ok(err) => Err(err),
+                Err(err) => Err(anyhow::anyhow!("{:#}", err)),
+            };
+        }
+    };
+    Ok(RestrictionCheckResult {
+        has_authorization: config.has_authorization,
+        restriction_roots: config.restriction_paths.clone().unwrap_or_default(),
+    })
+}
+
 /// Log compact Shadow comparison results to Scuba.
 ///
 /// This emits one row when a Shadow-mode lookup source either finds a
@@ -326,6 +445,15 @@ fn source_comparison_log_context(
             acl_manifest_result,
         ),
     })
+}
+
+fn source_result<T>(result: Result<T>) -> SourceRestrictionResult
+where
+    T: Into<SourceRestrictionCheckResult>,
+{
+    result
+        .map(|result| Arc::new(result.into()))
+        .map_err(Arc::new)
 }
 
 fn considered_restricted_by_for_source_results(

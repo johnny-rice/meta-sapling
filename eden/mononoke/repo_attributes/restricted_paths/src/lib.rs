@@ -38,12 +38,9 @@ use tokio::task;
 
 pub use crate::access_log::ACCESS_LOG_SCUBA_TABLE;
 pub use crate::access_log::RestrictionCheckResult;
-use crate::access_log::SourceRestrictionResult;
 pub use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_member_of_groups;
 use crate::access_log::log_access_to_restricted_path;
-use crate::access_log::log_source_results_to_scuba;
-use crate::restriction_check::PathRestrictionSource;
 pub use crate::restriction_info::ManifestRestrictionInfo;
 pub use crate::restriction_info::PathRestrictionInfo;
 
@@ -268,9 +265,19 @@ impl RestrictedPaths {
         manifest_type: ManifestType,
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
+        if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
+            return access_log::log_shadow_access_by_manifest_if_restricted(
+                self,
+                ctx,
+                manifest_id,
+                manifest_type,
+            )
+            .await;
+        }
+
         // No need to query the DB if the config is empty, i.e. the repo doesn't
         // have any restricted paths.
-        let _ = cs_id; // Will be used in a follow-up diff for ACL manifest checks
+        let _ = cs_id; // Config-backed manifest logging does not use changeset ids.
 
         if self.config().is_empty() {
             return Ok(RestrictionCheckResult {
@@ -327,13 +334,12 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
         if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
-            return self
-                .log_shadow_access_by_path_if_restricted(ctx, path, cs_id)
+            return access_log::log_shadow_access_by_path_if_restricted(self, ctx, path, cs_id)
                 .await;
         }
 
         // Return early if the repo doesn't have any restricted paths.
-        let _ = cs_id; // Will be used in a follow-up diff for ACL manifest checks
+        let _ = cs_id; // Config-backed path logging does not use changeset ids.
         if self.config().is_empty() {
             return Ok(RestrictionCheckResult {
                 has_authorization: true,
@@ -373,53 +379,6 @@ impl RestrictedPaths {
         .await
     }
 
-    async fn log_shadow_access_by_path_if_restricted(
-        &self,
-        ctx: &CoreContext,
-        path: NonRootMPath,
-        cs_id: Option<ChangesetId>,
-    ) -> Result<RestrictionCheckResult> {
-        let config_result = source_result(
-            restriction_check::check_path_restriction(
-                ctx,
-                self,
-                path.clone(),
-                PathRestrictionSource::Config,
-            )
-            .await,
-        );
-        let acl_manifest_result = match cs_id {
-            Some(cs_id) => Some(source_result(
-                restriction_check::check_path_restriction(
-                    ctx,
-                    self,
-                    path.clone(),
-                    PathRestrictionSource::AclManifest(cs_id),
-                )
-                .await,
-            )),
-            None => None,
-        };
-
-        log_source_results_to_scuba(
-            ctx,
-            self.config_based.manifest_id_store().repo_id(),
-            &config_result,
-            acl_manifest_result.as_ref(),
-            AclManifestMode::Shadow,
-            crate::access_log::RestrictedPathAccessData::FullPath { full_path: path },
-            self.scuba.clone(),
-        )?;
-
-        let config = config_result
-            .as_ref()
-            .map_err(|err| anyhow::anyhow!("{:#}", err))?;
-        Ok(RestrictionCheckResult {
-            has_authorization: config.has_authorization,
-            restriction_roots: config.restriction_paths.clone().unwrap_or_default(),
-        })
-    }
-
     /// Check if any client identity matches the enforcement conditions config.
     /// Returns true if enforcement should be applied.
     async fn should_enforce_restriction(&self, ctx: &CoreContext) -> Result<bool> {
@@ -431,15 +390,6 @@ impl RestrictedPaths {
         let acls: Vec<_> = enforcement_acls.iter().collect();
         is_member_of_groups(ctx, &self.acl_provider, acls.as_slice()).await
     }
-}
-
-fn source_result<T>(result: Result<T>) -> SourceRestrictionResult
-where
-    T: Into<crate::access_log::SourceRestrictionCheckResult>,
-{
-    result
-        .map(|result| Arc::new(result.into()))
-        .map_err(Arc::new)
 }
 
 /// Helper function to spawn an async task that logs access to restricted paths.
