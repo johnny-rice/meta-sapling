@@ -63,17 +63,29 @@ pub struct RestrictionCheckResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthorizationCheckResult {
     /// Whether the caller has direct read access to every matching path ACL.
-    pub(crate) has_acl_access: bool,
+    has_acl_access: bool,
     /// Whether the caller is in the tooling allowlist group.
-    pub(crate) is_allowlisted_tooling: bool,
+    is_allowlisted_tooling: bool,
     /// Whether the caller is in the rollout allowlist group.
-    pub(crate) is_rollout_allowlisted: bool,
+    is_rollout_allowlisted: bool,
 }
 
 impl AuthorizationCheckResult {
     /// Whether the caller has read authorization through ACLs or allowlists.
     pub(crate) fn has_authorization(&self) -> bool {
         self.has_acl_access || self.is_allowlisted_tooling || self.is_rollout_allowlisted
+    }
+
+    pub(crate) fn has_acl_access(&self) -> bool {
+        self.has_acl_access
+    }
+
+    pub(crate) fn is_allowlisted_tooling(&self) -> bool {
+        self.is_allowlisted_tooling
+    }
+
+    pub(crate) fn is_rollout_allowlisted(&self) -> bool {
+        self.is_rollout_allowlisted
     }
 }
 

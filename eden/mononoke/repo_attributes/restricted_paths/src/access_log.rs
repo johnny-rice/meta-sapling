@@ -877,9 +877,9 @@ pub(crate) async fn log_access_to_restricted_path(
                 restricted_paths: Some(&restricted_paths),
                 authorization: LoggedAuthorization {
                     has_authorization: authorization.has_authorization(),
-                    is_allowlisted_tooling: authorization.is_allowlisted_tooling,
-                    is_rollout_allowlisted: authorization.is_rollout_allowlisted,
-                    has_acl_access: authorization.has_acl_access,
+                    is_allowlisted_tooling: authorization.is_allowlisted_tooling(),
+                    is_rollout_allowlisted: authorization.is_rollout_allowlisted(),
+                    has_acl_access: authorization.has_acl_access(),
                 },
                 acls,
             }),
