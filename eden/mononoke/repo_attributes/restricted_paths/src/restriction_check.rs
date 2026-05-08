@@ -14,13 +14,18 @@ use std::sync::Arc;
 use anyhow::Context;
 use anyhow::Result;
 use context::CoreContext;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use futures::future::BoxFuture;
+use futures::future::Shared;
 use futures::stream;
+use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mononoke_types::NonRootMPath;
 use permission_checker::AclProvider;
 use permission_checker::MononokeIdentity;
+use tokio::task::JoinHandle;
 
 use crate::ManifestId;
 use crate::ManifestType;
@@ -30,6 +35,9 @@ use crate::access_log::is_part_of_group;
 use crate::restriction_info;
 use crate::restriction_info::ManifestRestrictionInfo;
 use crate::restriction_info::PathRestrictionInfo;
+
+#[cfg(test)]
+mod tests;
 
 /// Source to use for path-side restriction checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -391,6 +399,36 @@ impl SourceRestrictionSummary {
     }
 }
 
+/// Cloneable handle for a spawned source fetch.
+#[derive(Clone)]
+pub(crate) struct SharedFetchHandle<T: SourceRestrictionCheck> {
+    inner: Shared<BoxFuture<'static, SourceRestrictionResult<T>>>,
+}
+
+impl<T: SourceRestrictionCheck + Send + Sync + 'static> SharedFetchHandle<T> {
+    pub(crate) fn from_join_handle(handle: JoinHandle<Result<Vec<T>>>) -> Self {
+        let inner = async move {
+            match handle.await {
+                Ok(result) => result
+                    .map(SourceRestrictionChecks::new)
+                    .map_err(SourceRestrictionError::from),
+                Err(join_err) => Err(SourceRestrictionError::from(anyhow::Error::from(join_err))),
+            }
+        }
+        .boxed()
+        .shared();
+        Self { inner }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "called by source planning in a follow-up diff")
+    )]
+    pub(crate) async fn await_result(&self) -> SourceRestrictionResult<T> {
+        self.inner.clone().await
+    }
+}
+
 /// Evaluate ACL and allowlist authorization for a restricted-path access.
 pub(crate) async fn check_authorization(
     ctx: &CoreContext,
@@ -549,6 +587,20 @@ pub(crate) async fn check_path_restriction_from_source(
     }
 }
 
+#[expect(dead_code, reason = "wired into source planning in a follow-up diff")]
+pub(crate) fn spawn_path_restriction_check(
+    ctx: &CoreContext,
+    restricted_paths: Arc<RestrictedPaths>,
+    path: NonRootMPath,
+    source: PathRestrictionSource,
+) -> SharedFetchHandle<PathRestrictionCheckResult> {
+    let ctx = ctx.clone();
+    let handle = mononoke::spawn_task(async move {
+        check_path_restriction_from_source(&ctx, &restricted_paths, path, source).await
+    });
+    SharedFetchHandle::from_join_handle(handle)
+}
+
 /// Check a manifest against one selected restriction source.
 ///
 /// Normal callers should use `get_manifest_restriction_check`, which exposes
@@ -565,7 +617,59 @@ pub(crate) async fn check_manifest_restriction_from_source(
         .await
 }
 
-async fn check_config_path_restriction_infos(
+#[expect(dead_code, reason = "wired into source planning in a follow-up diff")]
+pub(crate) fn spawn_manifest_restriction_check(
+    ctx: &CoreContext,
+    restricted_paths: Arc<RestrictedPaths>,
+    manifest_id: ManifestId,
+    manifest_type: ManifestType,
+    source: ManifestRestrictionSource,
+) -> SharedFetchHandle<ManifestRestrictionCheckResult> {
+    let ctx = ctx.clone();
+    let handle = mononoke::spawn_task(async move {
+        check_manifest_restriction_from_source(
+            &ctx,
+            &restricted_paths,
+            manifest_id,
+            manifest_type,
+            source,
+        )
+        .await
+    });
+    SharedFetchHandle::from_join_handle(handle)
+}
+
+pub async fn check_path_restriction_infos(
+    ctx: &CoreContext,
+    restricted_paths: &RestrictedPaths,
+    restriction_info: Vec<PathRestrictionInfo>,
+) -> Result<Vec<PathRestrictionCheckResult>> {
+    if restriction_info.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let allowlist_authorization =
+        check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
+    stream::iter(restriction_info)
+        .map(|restriction_info| async move {
+            let authorization = check_restriction_authorization(
+                ctx,
+                restricted_paths,
+                &restriction_info.repo_region_acl,
+                allowlist_authorization,
+            )
+            .await?;
+            Ok(PathRestrictionCheckResult::new(
+                restriction_info,
+                authorization,
+            ))
+        })
+        .buffered(100)
+        .try_collect()
+        .await
+}
+
+pub async fn check_config_path_restriction_infos(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     path: &NonRootMPath,
@@ -599,36 +703,6 @@ async fn check_config_path_restriction_infos(
                 ctx,
                 restricted_paths,
                 &acl,
-                allowlist_authorization,
-            )
-            .await?;
-            Ok(PathRestrictionCheckResult::new(
-                restriction_info,
-                authorization,
-            ))
-        })
-        .buffered(100)
-        .try_collect()
-        .await
-}
-
-pub async fn check_path_restriction_infos(
-    ctx: &CoreContext,
-    restricted_paths: &RestrictedPaths,
-    restriction_info: Vec<PathRestrictionInfo>,
-) -> Result<Vec<PathRestrictionCheckResult>> {
-    if restriction_info.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let allowlist_authorization =
-        check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
-    stream::iter(restriction_info)
-        .map(|restriction_info| async move {
-            let authorization = check_restriction_authorization(
-                ctx,
-                restricted_paths,
-                &restriction_info.repo_region_acl,
                 allowlist_authorization,
             )
             .await?;
