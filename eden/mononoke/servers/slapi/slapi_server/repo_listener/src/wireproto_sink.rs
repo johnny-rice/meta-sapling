@@ -6,6 +6,8 @@
  */
 
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -20,15 +22,15 @@ use sshrelay::SshMsg;
 pub struct WireprotoSink<T> {
     #[pin]
     inner: T,
-    pub data: WireprotoSinkData,
+    // Shared with the wireproto idle watchdog in
+    // connection_acceptor::handle_wireproto. The lock is held only briefly to
+    // record stat updates / read timestamps — never across an `.await`.
+    pub data: Arc<Mutex<WireprotoSinkData>>,
 }
 
 impl<T> WireprotoSink<T> {
-    pub fn new(inner: T) -> Self {
-        Self {
-            inner,
-            data: WireprotoSinkData::new(),
-        }
+    pub fn with_shared_data(inner: T, data: Arc<Mutex<WireprotoSinkData>>) -> Self {
+        Self { inner, data }
     }
 }
 
@@ -41,28 +43,38 @@ where
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         let ret = this.inner.poll_ready(cx);
-        this.data.peek_io(&ret);
+        this.data
+            .lock()
+            .expect("WireprotoSinkData lock poisoned")
+            .peek_io(&ret);
         ret
     }
 
     fn start_send(self: Pin<&mut Self>, item: SshMsg) -> Result<(), Self::Error> {
         let this = self.project();
-        this.data.peek_message(&item);
+        this.data
+            .lock()
+            .expect("WireprotoSinkData lock poisoned")
+            .peek_message(&item);
         this.inner.start_send(item)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         let ret = this.inner.poll_flush(cx);
-        this.data.peek_io(&ret);
-        this.data.peek_flush(&ret);
+        let mut guard = this.data.lock().expect("WireprotoSinkData lock poisoned");
+        guard.peek_io(&ret);
+        guard.peek_flush(&ret);
         ret
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         let ret = this.inner.poll_close(cx);
-        this.data.peek_io(&ret);
+        this.data
+            .lock()
+            .expect("WireprotoSinkData lock poisoned")
+            .peek_io(&ret);
         ret
     }
 }
@@ -76,7 +88,7 @@ pub struct WireprotoSinkData {
 }
 
 impl WireprotoSinkData {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             last_successful_flush: None,
             last_successful_io: None,

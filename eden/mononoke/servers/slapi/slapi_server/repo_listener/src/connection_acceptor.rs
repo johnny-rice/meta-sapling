@@ -11,6 +11,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -18,8 +19,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use bytes::Bytes;
 use cached_config::ConfigStore;
+use chrono::Utc;
 use connection_security_checker::ConnectionSecurityChecker;
 use fbinit::FacebookInit;
 use futures::channel::mpsc;
@@ -82,11 +85,16 @@ use crate::errors::ErrorKind;
 use crate::http_service::MononokeHttpService;
 use crate::request_handler::request_handler;
 use crate::wireproto_sink::WireprotoSink;
+use crate::wireproto_sink::WireprotoSinkData;
 
 define_stats! {
     prefix = "mononoke.connection_acceptor";
     http_accepted: timeseries(Sum),
     open_connections: singleton_counter(),
+    // Number of wireproto handlers killed by the per-handler idle watchdog
+    // (see `wireproto_idle_watchdog`). Non-zero means we caught a wedged
+    // handler that would otherwise have leaked Arcs / response buffers.
+    wireproto_idle_killed: timeseries(Sum),
 }
 
 pub trait MononokeStream: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static {}
@@ -359,6 +367,7 @@ where
         stderr,
         keep_alive,
         join_handle,
+        sink_data,
     } = ChannelConn::setup(framed, conn.clone(), metadata.clone());
 
     if metadata.client_debug() {
@@ -372,9 +381,7 @@ where
         stderr,
     };
 
-    // Don't immediately return error here, we need to cleanup our
-    // handlers like keep alive, otherwise they will run forever.
-    let result = request_handler(
+    let request_fut = request_handler(
         conn.pending.acceptor.fb,
         reponame,
         Arc::clone(&conn.pending.acceptor.mononoke),
@@ -385,19 +392,151 @@ where
         conn.pending.acceptor.scribe.clone(),
         conn.pending.acceptor.qps.clone(),
         conn.pending.acceptor.readonly,
-    )
-    .await
-    .context("Failed to execute request_handler");
+    );
+
+    // Race `request_handler` against a per-handler idle watchdog. The watchdog
+    // observes the WireprotoSink's `last_successful_io` timestamp; if no write
+    // has succeeded for the configured threshold, the handler is presumed
+    // wedged (stuck on a half-dead H2 stream's flow-control window, typically)
+    // and we kill it. Don't call `?` here — we still need to run cleanup.
+    let (watchdog_fired, result) = tokio::select! {
+        res = request_fut => {
+            (false, res.context("Failed to execute request_handler"))
+        }
+        _ = wireproto_idle_watchdog(sink_data) => {
+            STATS::wireproto_idle_killed.add_value(1);
+            (true, Err(anyhow!("Wireproto handler killed by idle watchdog")))
+        }
+    };
 
     // Shutdown our keepalive handler
     keep_alive.abort();
 
-    join_handle
-        .await
-        .context("Failed to join ChannelConn")?
-        .context("Failed to close ChannelConn")?;
+    if watchdog_fired {
+        // The fwd task is almost certainly stuck on the same WireprotoSink
+        // poll that the watchdog flagged. Aborting it ensures the
+        // `join_handle.await` below doesn't itself hang and that `wr` (and
+        // the upgraded H2 IO it owns) is dropped promptly so memory is
+        // released.
+        join_handle.abort();
+        let _ = join_handle.await;
+    } else {
+        join_handle
+            .await
+            .context("Failed to join ChannelConn")?
+            .context("Failed to close ChannelConn")?;
+    }
 
     result
+}
+
+/// Per-handler idle watchdog for wireproto sessions.
+///
+/// ## Why this exists
+///
+/// Each wireproto session spawns a `fwd` task that drains stdout/stderr/
+/// keepalive streams into a `WireprotoSink<W>`, where `W` is the writer half
+/// of the upgraded HTTP body. Under HTTP/1.1, when the client disconnects,
+/// TCP closes and `W::poll_*` returns `Err` immediately — the existing
+/// cleanup chain (drop senders → fwd ends → request_handler unwinds) runs to
+/// completion in milliseconds.
+///
+/// Under HTTP/2 extended CONNECT (RFC 8441), a wireproto stream lives inside
+/// a multiplexed H2 connection that may persist for the pool's
+/// `keep_alive_timeout_ms` (15 minutes in production). If the peer stops
+/// draining a stream without sending RST_STREAM — e.g., a misbehaving
+/// proxygen pool that's holding the connection open for other streams —
+/// `W::poll_ready` / `W::poll_flush` can pend on the H2 flow-control window
+/// indefinitely. Nothing in the existing code path will ever return `Err`,
+/// so request_handler stays alive holding `Arc<Mononoke<Repo>>`,
+/// `RepoClient`, the boxed `HgProtoHandler::outstream`, and any in-flight
+/// response payload (`getbundle` responses can be megabytes). This is the
+/// memory-leak shape observed in S530959 ("memory is being held in wireproto
+/// codepath" after the H2 enablement in D70000450).
+///
+/// ## What this does
+///
+/// Polls the shared `WireprotoSinkData::last_successful_io` timestamp. If the
+/// configured threshold has elapsed since the last successful write (or
+/// poll-ready) on the sink, returns — which fires the `tokio::select!` arm
+/// in `handle_wireproto` and cancels `request_handler`, releasing all the
+/// held Arcs and buffers. The keepalive task writes to the sink every 5s, so
+/// a healthy session — even one whose protocol layer is doing CPU work —
+/// always has a fresh `last_successful_io`. Only an actually-wedged sink
+/// fails to update.
+///
+/// ## Scope
+///
+/// Only invoked from `handle_wireproto`, which is reached exclusively from
+/// `MononokeHttpService::handle_websocket_request` when `is_websocket_req`
+/// returns true. SLAPI/EdenAPI/control/health/netspeedtest paths bypass this
+/// entirely — none of them go through the wireproto upgrade. Adding an idle
+/// kill here therefore cannot affect non-wireproto traffic.
+///
+/// ## Configuration
+///
+/// Gated by `scm/mononoke:wireproto_idle_kill_seconds` (i64). A value <= 0
+/// disables the watchdog. Defined in just_knobs.json so the default lives in
+/// configuration, not in code (per `fbcode/eden/.llms/rules/rust_unwrap_safety.md`).
+async fn wireproto_idle_watchdog(data: Arc<Mutex<WireprotoSinkData>>) {
+    // Granular enough to react quickly; coarse enough that the JK lookup is
+    // negligible.
+    const POLL_INTERVAL: Duration = Duration::from_secs(10);
+    // Back-off when the JK system itself is unhappy: don't spam logs more than
+    // once a minute, and keep the watchdog disabled (i.e., return Pending) in
+    // the meantime — failing closed here would kill every wireproto handler
+    // when the JK fetcher hiccups, which is precisely the kind of blast
+    // radius this watchdog is meant to prevent.
+    const JK_ERROR_BACKOFF: Duration = Duration::from_secs(60);
+
+    loop {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        match check_wireproto_idle(&data) {
+            Ok(true) => return,
+            Ok(false) => continue,
+            Err(e) => {
+                warn!(
+                    "wireproto_idle_watchdog: JK read failed, watchdog inert: {:#}",
+                    e
+                );
+                tokio::time::sleep(JK_ERROR_BACKOFF).await;
+            }
+        }
+    }
+}
+
+/// Returns `Ok(true)` iff the watchdog should fire (handler is idle past the
+/// configured threshold). Sync; safe to call from the watchdog loop without
+/// holding any guard across an await.
+fn check_wireproto_idle(data: &Arc<Mutex<WireprotoSinkData>>) -> Result<bool> {
+    let threshold_secs =
+        justknobs::get_as::<i64>("scm/mononoke:wireproto_idle_kill_seconds", None)?;
+    if threshold_secs <= 0 {
+        // Off switch: not configured for this rollout, or explicitly disabled.
+        return Ok(false);
+    }
+    let threshold_secs = threshold_secs as u64;
+
+    // Briefly lock to copy the timestamp; immediately released.
+    let last = data
+        .lock()
+        .expect("WireprotoSinkData lock poisoned")
+        .last_successful_io;
+
+    if let Some(t) = last {
+        let elapsed = (Utc::now() - t).num_seconds();
+        if elapsed > 0 && (elapsed as u64) > threshold_secs {
+            warn!(
+                "wireproto handler idle for {}s (threshold {}s); aborting",
+                elapsed, threshold_secs
+            );
+            return Ok(true);
+        }
+    }
+    // No I/O recorded yet (handler may still be initializing) — leave it
+    // alone. If the handler genuinely never writes anything it will be
+    // bounded by the connection-level lifetime, not by us.
+    Ok(false)
 }
 
 pub struct FramedConn<R, W> {
@@ -424,6 +563,11 @@ pub struct ChannelConn {
     stderr: mpsc::UnboundedSender<Bytes>,
     keep_alive: AbortHandle,
     join_handle: JoinHandle<Result<(), io::Error>>,
+    // Shared with the `WireprotoSink` running inside the `fwd` task. Read by
+    // `wireproto_idle_watchdog` to detect a wedged writer half (the leak
+    // failure mode that motivated this; see module-level comment on
+    // `wireproto_idle_watchdog`).
+    sink_data: Arc<Mutex<WireprotoSinkData>>,
 }
 
 impl ChannelConn {
@@ -446,6 +590,12 @@ impl ChannelConn {
             }
         }));
 
+        // Shared between the `fwd` task's `WireprotoSink` and the idle
+        // watchdog launched in `handle_wireproto`. The Mutex is only ever
+        // locked briefly to read/write timestamp+counter fields and is never
+        // held across an `.await`.
+        let sink_data = Arc::new(Mutex::new(WireprotoSinkData::new()));
+
         let (stdout, stderr, keep_alive, join_handle) = {
             let (otx, orx) = mpsc::channel(1);
             let (etx, erx) = mpsc::unbounded();
@@ -461,9 +611,10 @@ impl ChannelConn {
                 .map_ok(|v| SshMsg::new(IoStream::Stderr, v));
             let krx = krx.map_ok(|v| SshMsg::new(IoStream::Stderr, v));
 
+            let fwd_sink_data = sink_data.clone();
             // Glue them together
             let fwd = async move {
-                let wr = WireprotoSink::new(wr);
+                let wr = WireprotoSink::with_shared_data(wr, fwd_sink_data);
 
                 futures::pin_mut!(wr);
 
@@ -473,27 +624,33 @@ impl ChannelConn {
                     .await;
 
                 if let Err(e) = res.as_ref() {
-                    let projected_wr = wr.as_mut().project();
-                    let data = projected_wr.data;
-
                     let mut scuba = conn.pending.acceptor.wireproto_scuba.clone();
                     scuba.add_metadata(&metadata);
-                    scuba.add_opt(
-                        "last_successful_flush",
-                        data.last_successful_flush.map(|dt| dt.timestamp()),
-                    );
-                    scuba.add_opt(
-                        "last_successful_io",
-                        data.last_successful_io.map(|dt| dt.timestamp()),
-                    );
-                    scuba.add_opt(
-                        "last_failed_io",
-                        data.last_failed_io.map(|dt| dt.timestamp()),
-                    );
-                    scuba.add("stdout_bytes", data.stdout.bytes);
-                    scuba.add("stdout_messages", data.stdout.messages);
-                    scuba.add("stderr_bytes", data.stderr.bytes);
-                    scuba.add("stderr_messages", data.stderr.messages);
+                    {
+                        // Scope the guard tightly: WireprotoSinkData is now
+                        // shared, and we must drop it before `.await` below.
+                        let projected_wr = wr.as_mut().project();
+                        let data = projected_wr
+                            .data
+                            .lock()
+                            .expect("WireprotoSinkData lock poisoned");
+                        scuba.add_opt(
+                            "last_successful_flush",
+                            data.last_successful_flush.map(|dt| dt.timestamp()),
+                        );
+                        scuba.add_opt(
+                            "last_successful_io",
+                            data.last_successful_io.map(|dt| dt.timestamp()),
+                        );
+                        scuba.add_opt(
+                            "last_failed_io",
+                            data.last_failed_io.map(|dt| dt.timestamp()),
+                        );
+                        scuba.add("stdout_bytes", data.stdout.bytes);
+                        scuba.add("stdout_messages", data.stdout.messages);
+                        scuba.add("stderr_bytes", data.stderr.bytes);
+                        scuba.add("stderr_messages", data.stderr.messages);
+                    }
                     scuba.log_with_msg("Forwarding failed", format!("{:#}", e));
                 }
 
@@ -540,6 +697,7 @@ impl ChannelConn {
             stderr,
             keep_alive,
             join_handle,
+            sink_data,
         }
     }
 }
