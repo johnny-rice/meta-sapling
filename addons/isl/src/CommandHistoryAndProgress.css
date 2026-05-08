@@ -9,7 +9,7 @@
   bottom: 0;
   background: var(--background);
   padding: calc(2 * var(--pad));
-  z-index: 1;
+  z-index: 20;
   border-top: 1px solid var(--panel-view-border);
   display: flex;
   flex-direction: column;
@@ -93,6 +93,7 @@
   max-width: 90%;
   border-right-width: 0;
   min-width: 150px;
+  z-index: 11;
 }
 
 .queued-operation {
