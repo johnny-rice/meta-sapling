@@ -153,16 +153,12 @@ export function SmartActionsDropdown({commit}: {commit?: CommitInfo}) {
     sortedActionItems.map(actionItem => ({
       label: actionItem.label,
       onClick: (e?: MouseEvent) => {
+        setSelectedAction(actionItem);
+        bumpSmartAction(actionItem.id);
         if (e?.altKey) {
-          setSelectedAction(actionItem);
-          bumpSmartAction(actionItem.id);
           // Defer to allow state update and re-render before toggling the tooltip
           setTimeout(openContextTooltip, 0);
-          return;
         }
-        setSelectedAction(actionItem);
-        runSmartAction(actionItem.config, context);
-        bumpSmartAction(actionItem.id);
       },
       tooltip: (() => {
         const desc = resolveDescription(actionItem.config, context);
