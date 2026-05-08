@@ -83,6 +83,7 @@ impl Drop for PathLock {
 }
 
 pub fn open_lockfile<P: AsRef<Path>>(path: P) -> io::Result<File> {
+    #[cfg(unix)]
     let path_exists = path.as_ref().exists();
     let file = open(path.as_ref(), "wc").io_context("lock file")?;
     #[cfg(unix)]
