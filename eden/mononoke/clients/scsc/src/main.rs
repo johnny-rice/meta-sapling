@@ -34,6 +34,9 @@ pub(crate) mod library;
 mod render;
 pub(crate) mod util;
 
+const SCSC_ADMIN_ENABLED_ENV: &str = "SCSC_ADMIN_ENABLED";
+const SCSC_PRINT_CORRELATOR_ENV: &str = "SCSC_PRINT_CORRELATOR";
+
 lazy_static::lazy_static! {
     static ref SHORT_VERSION: String = {
         #[cfg(target_os = "windows")]
@@ -66,13 +69,21 @@ lazy_static::lazy_static! {
 pub(crate) struct ScscApp {
     matches: ArgMatches,
     connection_args: ConnectionArgs,
+    print_correlator: bool,
     target: OutputFormat,
     fb: FacebookInit,
 }
 
 impl ScscApp {
     async fn get_connection(&self, repo: Option<&str>) -> anyhow::Result<ScsClient> {
-        self.connection_args.get_connection(self.fb, repo).await
+        let conn = self.connection_args.get_connection(self.fb, repo).await?;
+        if self.print_correlator {
+            match conn.get_client_corrrelator() {
+                Some(correlator) => println!("Client correlator: {}", correlator),
+                None => println!("Client correlator: <none>"),
+            }
+        }
+        Ok(conn)
     }
 }
 
@@ -106,6 +117,7 @@ async fn main_impl(fb: FacebookInit) -> anyhow::Result<()> {
     }
     let subcommands = commands::subcommands();
     assert!(!subcommands.is_empty());
+    let scsc_admin_enabled = env::var_os(SCSC_ADMIN_ENABLED_ENV).is_some();
     let app = ScscArgs::command()
         .subcommands(subcommands)
         .subcommand_required(true)
@@ -118,9 +130,11 @@ async fn main_impl(fb: FacebookInit) -> anyhow::Result<()> {
     } else {
         OutputFormat::Text
     };
+    let print_correlator = scsc_admin_enabled && env::var_os(SCSC_PRINT_CORRELATOR_ENV).is_some();
     let app = ScscApp {
         matches,
         connection_args,
+        print_correlator,
         target,
         fb,
     };
