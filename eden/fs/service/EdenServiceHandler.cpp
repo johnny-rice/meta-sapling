@@ -3357,11 +3357,70 @@ EdenServiceHandler::semifuture_getEntryInformationImpl(
       .semi();
 }
 
+folly::coro::now_task<std::unique_ptr<std::vector<EntryInformationOrError>>>
+EdenServiceHandler::co_getEntryInformationImpl(
+    std::unique_ptr<std::string> mountPoint,
+    std::unique_ptr<std::vector<std::string>> paths,
+    std::unique_ptr<SyncBehavior> sync) {
+  XLOG(DBG6, "Using coroutine path for getEntryInformation");
+  auto helper = INSTRUMENT_THRIFT_CALL(
+      DBG3, *mountPoint, getSyncTimeout(*sync), toLogArg(*paths));
+  auto& fetchContext = helper->getFetchContext();
+  auto mountHandle = lookupMount(mountPoint);
+  auto objectStore = mountHandle.getObjectStorePtr();
+
+  co_await co_waitForPendingWrites(mountHandle.getEdenMount(), *sync);
+
+  auto results = co_await co_applyToVirtualInode(
+      mountHandle.getRootInode(),
+      *paths,
+      [](const VirtualInode& inode, const RelativePath&)
+          -> folly::coro::now_task<dtype_t> { co_return inode.getDtype(); },
+      objectStore,
+      fetchContext);
+
+  auto out = std::make_unique<std::vector<EntryInformationOrError>>();
+  out->reserve(results.size());
+
+  for (auto& item : results) {
+    EntryInformationOrError result;
+    if (item.hasException()) {
+      result.error() = newEdenError(item.exception());
+    } else {
+      EntryInformation info;
+      info.dtype() = static_cast<Dtype>(item.value());
+      result.info() = info;
+    }
+    out->emplace_back(std::move(result));
+  }
+
+  co_return out;
+}
+
 folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
 EdenServiceHandler::semifuture_getEntryInformation(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
+  if (server_->getServerState()
+          ->getEdenConfig()
+          ->enableCoroutinesPhase8.getValue()) {
+    // @lint-ignore CLANGTIDY facebook-folly-coro-return-captures-local-var
+    return folly::coro::co_invoke(
+               [self = shared_from_this()](
+                   std::unique_ptr<std::string> mountPoint,
+                   std::unique_ptr<std::vector<std::string>> paths,
+                   std::unique_ptr<SyncBehavior> sync)
+                   -> folly::coro::Task<
+                       std::unique_ptr<std::vector<EntryInformationOrError>>> {
+                 co_return co_await self->co_getEntryInformationImpl(
+                     std::move(mountPoint), std::move(paths), std::move(sync));
+               },
+               std::move(mountPoint),
+               std::move(paths),
+               std::move(sync))
+        .semi();
+  }
   return semifuture_getEntryInformationImpl(
       std::move(mountPoint), std::move(paths), std::move(sync));
 }
