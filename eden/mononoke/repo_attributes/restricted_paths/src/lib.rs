@@ -157,10 +157,6 @@ impl RestrictedPaths {
         self.use_acl_manifest
     }
 
-    fn use_config_path_lookup(&self) -> bool {
-        !self.use_acl_manifest
-    }
-
     // -----------------------------------------------------------------------
     // Public restriction lookup methods
     // -----------------------------------------------------------------------
@@ -173,16 +169,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
         paths: &[NonRootMPath],
     ) -> Result<Vec<PathRestrictionInfo>> {
-        if self.use_config_path_lookup() {
-            return Ok(restriction_info::get_exact_path_restriction_from_config(
-                self, paths,
-            ));
-        }
-
-        let cs_id =
-            cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
-        restriction_info::get_exact_path_restriction_from_acl_manifest(self, ctx, cs_id, paths)
-            .await
+        restriction_info::get_exact_path_restriction(self, ctx, cs_id, paths).await
     }
 
     /// Get restriction info for one or more paths, considering ancestor restrictions.
@@ -193,15 +180,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
         paths: &[NonRootMPath],
     ) -> Result<Vec<PathRestrictionInfo>> {
-        if self.use_config_path_lookup() {
-            return Ok(restriction_info::get_path_restriction_info_from_config(
-                self, paths,
-            ));
-        }
-
-        let cs_id =
-            cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
-        restriction_info::get_path_restriction_info_from_acl_manifest(self, ctx, cs_id, paths).await
+        restriction_info::get_path_restriction_info(self, ctx, cs_id, paths).await
     }
 
     /// Check if a path is itself a restriction root (exact match).
@@ -212,9 +191,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
         path: &NonRootMPath,
     ) -> Result<bool> {
-        self.get_exact_path_restriction(ctx, cs_id, std::slice::from_ref(path))
-            .await
-            .map(|r| !r.is_empty())
+        restriction_info::is_restriction_root(self, ctx, cs_id, path).await
     }
 
     /// Check if a path is restricted, considering ancestor directories.
@@ -225,9 +202,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
         path: &NonRootMPath,
     ) -> Result<bool> {
-        self.get_path_restriction_info(ctx, cs_id, std::slice::from_ref(path))
-            .await
-            .map(|r| !r.is_empty())
+        restriction_info::is_restricted_path(self, ctx, cs_id, path).await
     }
 
     /// Find all restriction roots that are descendants of any of the given root paths.
@@ -238,16 +213,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
         roots: Vec<MPath>,
     ) -> Result<Vec<PathRestrictionInfo>> {
-        if self.use_config_path_lookup() {
-            return Ok(restriction_info::find_restricted_descendants_from_config(
-                self, &roots,
-            ));
-        }
-
-        let cs_id =
-            cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
-        restriction_info::find_restricted_descendants_from_acl_manifest(self, ctx, cs_id, roots)
-            .await
+        restriction_info::find_restricted_descendants(self, ctx, cs_id, roots).await
     }
 
     // -----------------------------------------------------------------------

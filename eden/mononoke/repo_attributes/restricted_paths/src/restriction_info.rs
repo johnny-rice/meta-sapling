@@ -213,58 +213,84 @@ pub(crate) fn get_config_acls_for_paths<'a>(
 }
 
 /// Get exact path restriction info for one or more paths.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn get_exact_path_restriction(
-    _restricted_paths: &RestrictedPaths,
-    _ctx: &CoreContext,
-    _cs_id: Option<ChangesetId>,
-    _paths: &[NonRootMPath],
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    paths: &[NonRootMPath],
 ) -> Result<Vec<PathRestrictionInfo>> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    if !restricted_paths.use_acl_manifest() {
+        return Ok(get_exact_path_restriction_from_config(
+            restricted_paths,
+            paths,
+        ));
+    }
+
+    let cs_id =
+        cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
+    get_exact_path_restriction_from_acl_manifest(restricted_paths, ctx, cs_id, paths).await
 }
 
 /// Get restriction info for one or more paths, considering ancestor restrictions.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn get_path_restriction_info(
-    _restricted_paths: &RestrictedPaths,
-    _ctx: &CoreContext,
-    _cs_id: Option<ChangesetId>,
-    _paths: &[NonRootMPath],
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    paths: &[NonRootMPath],
 ) -> Result<Vec<PathRestrictionInfo>> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    if !restricted_paths.use_acl_manifest() {
+        return Ok(get_path_restriction_info_from_config(
+            restricted_paths,
+            paths,
+        ));
+    }
+
+    let cs_id =
+        cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
+    get_path_restriction_info_from_acl_manifest(restricted_paths, ctx, cs_id, paths).await
 }
 
 /// Check if a path is itself a restriction root.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn is_restriction_root(
-    _restricted_paths: &RestrictedPaths,
-    _ctx: &CoreContext,
-    _cs_id: Option<ChangesetId>,
-    _path: &NonRootMPath,
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    path: &NonRootMPath,
 ) -> Result<bool> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    get_exact_path_restriction(restricted_paths, ctx, cs_id, std::slice::from_ref(path))
+        .await
+        .map(|result| !result.is_empty())
 }
 
 /// Check if a path is restricted, considering ancestor directories.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn is_restricted_path(
-    _restricted_paths: &RestrictedPaths,
-    _ctx: &CoreContext,
-    _cs_id: Option<ChangesetId>,
-    _path: &NonRootMPath,
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    path: &NonRootMPath,
 ) -> Result<bool> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    get_path_restriction_info(restricted_paths, ctx, cs_id, std::slice::from_ref(path))
+        .await
+        .map(|result| !result.is_empty())
 }
 
 /// Find all restriction roots that are descendants of any of the given root paths.
-#[expect(dead_code, reason = "interface skeleton for the split stack")]
 pub(crate) async fn find_restricted_descendants(
-    _restricted_paths: &RestrictedPaths,
-    _ctx: &CoreContext,
-    _cs_id: Option<ChangesetId>,
-    _roots: Vec<MPath>,
+    restricted_paths: &RestrictedPaths,
+    ctx: &CoreContext,
+    cs_id: Option<ChangesetId>,
+    roots: Vec<MPath>,
 ) -> Result<Vec<PathRestrictionInfo>> {
-    unimplemented!("implemented by the follow-up extraction diff")
+    if !restricted_paths.use_acl_manifest() {
+        return Ok(find_restricted_descendants_from_config(
+            restricted_paths,
+            &roots,
+        ));
+    }
+
+    let cs_id =
+        cs_id.context("ChangesetId is required for ACL manifest-based restriction lookup")?;
+    find_restricted_descendants_from_acl_manifest(restricted_paths, ctx, cs_id, roots).await
 }
 
 /// Lookup restriction info for a manifest access through the config-backed source.
