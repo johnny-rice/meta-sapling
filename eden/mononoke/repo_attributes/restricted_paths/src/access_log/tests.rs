@@ -6,7 +6,6 @@
  */
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -17,34 +16,40 @@ use metaconfig_types::AclManifestMode;
 use mononoke_macros::mononoke;
 use mononoke_types::NonRootMPath;
 use mononoke_types::RepositoryId;
-use permission_checker::MononokeIdentity;
 use scuba_ext::MononokeScubaSampleBuilder;
 use serde_json::Value;
 use serde_json::json;
 
 use super::RestrictedPathAccessData;
-use super::SourceRestrictionCheckResult;
-use super::SourceRestrictionResult;
 use super::log_source_results_to_scuba;
 use crate::ManifestId;
 use crate::ManifestType;
+use crate::restriction_check::AuthorizationCheckResult;
+use crate::restriction_check::ManifestRestrictionCheckResult;
+use crate::restriction_check::PathRestrictionCheckResult;
+use crate::restriction_check::SourceRestrictionCheck;
+use crate::restriction_check::SourceRestrictionChecks;
+use crate::restriction_check::SourceRestrictionError;
+use crate::restriction_check::SourceRestrictionResult;
+use crate::restriction_info::ManifestRestrictionInfo;
+use crate::restriction_info::PathRestrictionInfo;
 
-struct ShadowComparisonFieldFixture {
+struct ShadowComparisonFieldFixture<T: SourceRestrictionCheck> {
     ctx: CoreContext,
     repo_id: RepositoryId,
     acl_manifest_mode: AclManifestMode,
-    config_result: SourceRestrictionResult,
-    acl_manifest_result: Option<SourceRestrictionResult>,
+    config_result: SourceRestrictionResult<T>,
+    acl_manifest_result: Option<SourceRestrictionResult<T>>,
     access_data: RestrictedPathAccessData,
     scuba: MononokeScubaSampleBuilder,
     log_path: PathBuf,
 }
 
-impl ShadowComparisonFieldFixture {
+impl<T: SourceRestrictionCheck> ShadowComparisonFieldFixture<T> {
     fn new(
         fb: FacebookInit,
-        config_result: SourceRestrictionResult,
-        acl_manifest_result: Option<SourceRestrictionResult>,
+        config_result: SourceRestrictionResult<T>,
+        acl_manifest_result: Option<SourceRestrictionResult<T>>,
         access_data: RestrictedPathAccessData,
     ) -> Result<Self> {
         let temp_log_file = tempfile::NamedTempFile::new()?;
@@ -68,8 +73,8 @@ impl ShadowComparisonFieldFixture {
         log_results: impl FnOnce(
             &CoreContext,
             RepositoryId,
-            &SourceRestrictionResult,
-            Option<&SourceRestrictionResult>,
+            &SourceRestrictionResult<T>,
+            Option<&SourceRestrictionResult<T>>,
             AclManifestMode,
             RestrictedPathAccessData,
             MononokeScubaSampleBuilder,
@@ -85,8 +90,8 @@ impl ShadowComparisonFieldFixture {
         log_results: impl FnOnce(
             &CoreContext,
             RepositoryId,
-            &SourceRestrictionResult,
-            Option<&SourceRestrictionResult>,
+            &SourceRestrictionResult<T>,
+            Option<&SourceRestrictionResult<T>>,
             AclManifestMode,
             RestrictedPathAccessData,
             MononokeScubaSampleBuilder,
@@ -124,12 +129,12 @@ impl ShadowComparisonFieldFixture {
 async fn test_shadow_mismatch_summary_fields_are_logged(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
-        Some(restricted_result(
+        restricted_path_result(false, false, "config_acl", "config/restricted")?,
+        Some(restricted_path_result(
             true,
             true,
             "acl_manifest_acl",
-            Some("acl_manifest/restricted"),
+            "acl_manifest/restricted",
         )?),
         full_path_access_data()?,
     )?
@@ -188,12 +193,12 @@ async fn test_shadow_matching_restricted_sources_log_row_without_mismatch(
 ) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        restricted_result(false, false, "shared_acl", Some("shared/restricted"))?,
-        Some(restricted_result(
+        restricted_path_result(false, false, "shared_acl", "shared/restricted")?,
+        Some(restricted_path_result(
             false,
             false,
             "shared_acl",
-            Some("shared/restricted"),
+            "shared/restricted",
         )?),
         full_path_access_data()?,
     )?
@@ -230,8 +235,13 @@ async fn test_shadow_root_only_differences_do_not_set_shadow_mismatch(
 ) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        restricted_result(false, false, "shared_acl", Some("config/restricted"))?,
-        Some(restricted_result(false, false, "shared_acl", None)?),
+        restricted_manifest_result(false, false, "shared_acl", Some("config/restricted"))?,
+        Some(restricted_manifest_result(
+            false,
+            false,
+            "shared_acl",
+            None,
+        )?),
         manifest_access_data(ManifestType::HgAugmented),
     )?
     .log_with(log_source_results_to_scuba)?;
@@ -256,8 +266,8 @@ async fn test_shadow_root_only_differences_do_not_set_shadow_mismatch(
 async fn test_shadow_aggregate_fields_stay_config_authoritative(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
-        Some(unrestricted_result(Some(vec![]))),
+        restricted_manifest_result(false, false, "config_acl", Some("config/restricted"))?,
+        Some(unrestricted_result()),
         manifest_access_data(ManifestType::HgAugmented),
     )?
     .log_with(log_source_results_to_scuba)?;
@@ -310,9 +320,9 @@ async fn test_shadow_aggregate_fields_stay_config_authoritative(fb: FacebookInit
 // while top-level authorization still comes from the config source.
 #[mononoke::fbinit_test]
 async fn test_shadow_comparison_errors_are_logged(fb: FacebookInit) -> Result<()> {
-    let samples = ShadowComparisonFieldFixture::new(
+    let samples = ShadowComparisonFieldFixture::<PathRestrictionCheckResult>::new(
         fb,
-        unrestricted_result(Some(vec![])),
+        unrestricted_result(),
         Some(error_result("acl manifest lookup failed")),
         full_path_access_data()?,
     )?
@@ -353,7 +363,7 @@ async fn test_shadow_comparison_errors_are_logged(fb: FacebookInit) -> Result<()
 // emitted without aggregate authorization fields.
 #[mononoke::fbinit_test]
 async fn test_shadow_config_errors_are_returned(fb: FacebookInit) -> Result<()> {
-    let (log_result, samples) = ShadowComparisonFieldFixture::new(
+    let (log_result, samples) = ShadowComparisonFieldFixture::<PathRestrictionCheckResult>::new(
         fb,
         error_result("config lookup failed"),
         Some(error_result("acl manifest lookup failed")),
@@ -414,7 +424,7 @@ async fn test_shadow_config_errors_are_returned(fb: FacebookInit) -> Result<()> 
 async fn test_shadow_skipped_comparison_source_is_not_logged(fb: FacebookInit) -> Result<()> {
     let samples = ShadowComparisonFieldFixture::new(
         fb,
-        restricted_result(false, false, "config_acl", Some("config/restricted"))?,
+        restricted_path_result(false, false, "config_acl", "config/restricted")?,
         None,
         manifest_access_data(ManifestType::Hg),
     )?
@@ -439,10 +449,10 @@ async fn test_shadow_skipped_comparison_source_is_not_logged(fb: FacebookInit) -
 // Expected: no Scuba row is written when both sources are unrestricted.
 #[mononoke::fbinit_test]
 async fn test_shadow_unrestricted_sources_do_not_log_rows(fb: FacebookInit) -> Result<()> {
-    let samples = ShadowComparisonFieldFixture::new(
+    let samples = ShadowComparisonFieldFixture::<PathRestrictionCheckResult>::new(
         fb,
-        unrestricted_result(Some(vec![])),
-        Some(unrestricted_result(Some(vec![]))),
+        unrestricted_result(),
+        Some(unrestricted_result()),
         full_path_access_data()?,
     )?
     .log_with(log_source_results_to_scuba)?;
@@ -451,32 +461,58 @@ async fn test_shadow_unrestricted_sources_do_not_log_rows(fb: FacebookInit) -> R
     Ok(())
 }
 
-fn restricted_result(
+fn restricted_path_result(
+    has_authorization: bool,
+    has_acl_access: bool,
+    acl_name: &str,
+    restriction_path: &str,
+) -> Result<SourceRestrictionResult<PathRestrictionCheckResult>> {
+    let repo_region_acl = repo_region_acl(acl_name);
+    Ok(Ok(SourceRestrictionChecks::new(vec![
+        PathRestrictionCheckResult::new(
+            PathRestrictionInfo {
+                restriction_root: NonRootMPath::new(restriction_path)?,
+                repo_region_acl: repo_region_acl.clone(),
+                request_acl: repo_region_acl,
+            },
+            authorization_result(has_authorization, has_acl_access),
+        ),
+    ])))
+}
+
+fn restricted_manifest_result(
     has_authorization: bool,
     has_acl_access: bool,
     acl_name: &str,
     restriction_path: Option<&str>,
-) -> Result<SourceRestrictionResult> {
-    Ok(Ok(Arc::new(SourceRestrictionCheckResult::new(
-        has_authorization,
-        has_acl_access,
-        vec![MononokeIdentity::new("REPO_REGION", acl_name)],
-        restriction_path
-            .map(|path| NonRootMPath::new(path).map(|path| vec![path]))
-            .transpose()?,
-        false,
-        false,
-    ))))
+) -> Result<SourceRestrictionResult<ManifestRestrictionCheckResult>> {
+    let repo_region_acl = repo_region_acl(acl_name);
+    Ok(Ok(SourceRestrictionChecks::new(vec![
+        ManifestRestrictionCheckResult::new(
+            ManifestRestrictionInfo {
+                restriction_root: restriction_path.map(NonRootMPath::new).transpose()?,
+                repo_region_acl: repo_region_acl.clone(),
+                request_acl: repo_region_acl,
+            },
+            authorization_result(has_authorization, has_acl_access),
+        ),
+    ])))
 }
 
-fn unrestricted_result(restriction_paths: Option<Vec<NonRootMPath>>) -> SourceRestrictionResult {
-    Ok(Arc::new(SourceRestrictionCheckResult::unrestricted(
-        restriction_paths,
-    )))
+fn unrestricted_result<T: SourceRestrictionCheck>() -> SourceRestrictionResult<T> {
+    Ok(SourceRestrictionChecks::new(Vec::new()))
 }
 
-fn error_result(message: &str) -> SourceRestrictionResult {
-    Err(Arc::new(anyhow!("{message}")))
+fn error_result<T: SourceRestrictionCheck>(message: &str) -> SourceRestrictionResult<T> {
+    Err(SourceRestrictionError::from(anyhow!("{message}")))
+}
+
+fn authorization_result(has_authorization: bool, has_acl_access: bool) -> AuthorizationCheckResult {
+    AuthorizationCheckResult::new(has_acl_access, has_authorization && !has_acl_access, false)
+}
+
+fn repo_region_acl(acl_name: &str) -> String {
+    format!("REPO_REGION:{acl_name}")
 }
 
 fn full_path_access_data() -> Result<RestrictedPathAccessData> {

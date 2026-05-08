@@ -25,7 +25,6 @@ use permission_checker::MononokeIdentity;
 use crate::ManifestId;
 use crate::ManifestType;
 use crate::RestrictedPaths;
-use crate::access_log::SourceRestrictionCheckResult;
 use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_part_of_group;
 use crate::restriction_info;
@@ -90,6 +89,18 @@ impl AllowlistAuthorization {
 }
 
 impl AuthorizationCheckResult {
+    pub(crate) fn new(
+        has_acl_access: bool,
+        is_allowlisted_tooling: bool,
+        is_rollout_allowlisted: bool,
+    ) -> Self {
+        Self {
+            has_acl_access,
+            is_allowlisted_tooling,
+            is_rollout_allowlisted,
+        }
+    }
+
     /// Whether the caller has read authorization through ACLs or allowlists.
     pub(crate) fn has_authorization(&self) -> bool {
         self.has_acl_access || self.is_allowlisted_tooling || self.is_rollout_allowlisted
@@ -168,6 +179,215 @@ impl ManifestRestrictionCheckResult {
     /// Whether the caller has read authorization through ACLs or allowlists.
     pub fn has_authorization(&self) -> bool {
         self.authorization.has_authorization()
+    }
+}
+
+/// Result returned by one restriction source fetch.
+///
+/// `SourceRestrictionChecks<T>` carries the `SourceRestrictionCheck` bound, so
+/// this result is still limited to typed source check results without relying on
+/// Rust's non-enforcing type-alias bounds.
+pub(crate) type SourceRestrictionResult<T> =
+    std::result::Result<SourceRestrictionChecks<T>, SourceRestrictionError>;
+
+/// Successful restriction check results returned by one source.
+///
+/// The results are shared behind an `Arc` so multiple consumers can observe the
+/// same typed checks without cloning every item.
+#[derive(Clone)]
+pub(crate) struct SourceRestrictionChecks<T: SourceRestrictionCheck> {
+    inner: Arc<Vec<T>>,
+}
+
+impl<T: SourceRestrictionCheck> SourceRestrictionChecks<T> {
+    pub(crate) fn new(checks: Vec<T>) -> Self {
+        Self {
+            inner: Arc::new(checks),
+        }
+    }
+
+    pub(crate) fn is_restricted(&self) -> bool {
+        !self.inner.is_empty()
+    }
+}
+
+impl<T: SourceRestrictionCheck> AsRef<[T]> for SourceRestrictionChecks<T> {
+    fn as_ref(&self) -> &[T] {
+        self.inner.as_slice()
+    }
+}
+
+/// Shared restriction-source error.
+///
+/// Source errors may be logged and surfaced after the same fetch completes, so
+/// the error is shared while preserving the original error as its source.
+#[derive(Clone, Debug)]
+pub(crate) struct SourceRestrictionError {
+    inner: Arc<anyhow::Error>,
+}
+
+impl From<anyhow::Error> for SourceRestrictionError {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            inner: Arc::new(error),
+        }
+    }
+}
+
+impl std::fmt::Display for SourceRestrictionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner.as_ref())
+    }
+}
+
+impl std::error::Error for SourceRestrictionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.chain().nth(1)
+    }
+}
+
+/// Common read-only view over typed source check results.
+///
+/// Path and manifest checks keep their concrete restriction-info types, but
+/// logging and enforcement need a small common surface to derive aggregate
+/// authorization, ACL, and restriction-root fields without copying data into a
+/// flattened adapter struct.
+pub(crate) trait SourceRestrictionCheck: Clone {
+    /// Caller authorization result for this source result.
+    fn authorization(&self) -> &AuthorizationCheckResult;
+    /// Repo-region ACL associated with this restriction.
+    fn repo_region_acl(&self) -> &str;
+    /// Restriction root when the source can report one.
+    fn restriction_root(&self) -> Option<&NonRootMPath>;
+    /// Whether this check type carries restriction roots independent of source.
+    fn reports_restriction_roots() -> bool;
+}
+
+impl SourceRestrictionCheck for PathRestrictionCheckResult {
+    fn authorization(&self) -> &AuthorizationCheckResult {
+        &self.authorization
+    }
+
+    fn repo_region_acl(&self) -> &str {
+        &self.restriction_info().repo_region_acl
+    }
+
+    fn restriction_root(&self) -> Option<&NonRootMPath> {
+        Some(&self.restriction_info().restriction_root)
+    }
+
+    fn reports_restriction_roots() -> bool {
+        true
+    }
+}
+
+impl SourceRestrictionCheck for ManifestRestrictionCheckResult {
+    fn authorization(&self) -> &AuthorizationCheckResult {
+        &self.authorization
+    }
+
+    fn repo_region_acl(&self) -> &str {
+        &self.restriction_info().repo_region_acl
+    }
+
+    fn restriction_root(&self) -> Option<&NonRootMPath> {
+        self.restriction_info().restriction_root.as_ref()
+    }
+
+    fn reports_restriction_roots() -> bool {
+        false
+    }
+}
+
+/// Aggregate view over one source's typed restriction checks.
+///
+/// Logging and enforcement derive authorization, ACL, and restriction-root
+/// summaries from this shared type so their source aggregation semantics stay in
+/// sync.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceRestrictionSummary {
+    authorization: AuthorizationCheckResult,
+    repo_region_acls: Vec<String>,
+    restriction_roots: Vec<NonRootMPath>,
+}
+
+impl SourceRestrictionSummary {
+    pub(crate) fn from_checks(checks: &[impl SourceRestrictionCheck]) -> Self {
+        let has_acl_access = checks
+            .iter()
+            .all(|check| check.authorization().has_acl_access());
+        let is_allowlisted_tooling = checks
+            .iter()
+            .any(|check| check.authorization().is_allowlisted_tooling());
+        let is_rollout_allowlisted = checks
+            .iter()
+            .any(|check| check.authorization().is_rollout_allowlisted());
+        let repo_region_acls = checks
+            .iter()
+            .map(|check| check.repo_region_acl().to_string())
+            .collect();
+        let restriction_roots = checks
+            .iter()
+            .filter_map(SourceRestrictionCheck::restriction_root)
+            .cloned()
+            .collect();
+
+        Self {
+            authorization: AuthorizationCheckResult::new(
+                has_acl_access,
+                is_allowlisted_tooling,
+                is_rollout_allowlisted,
+            ),
+            repo_region_acls,
+            restriction_roots,
+        }
+    }
+
+    pub(crate) fn has_authorization(&self) -> bool {
+        self.authorization.has_authorization()
+    }
+
+    pub(crate) fn has_acl_access(&self) -> bool {
+        self.authorization.has_acl_access()
+    }
+
+    pub(crate) fn is_allowlisted_tooling(&self) -> bool {
+        self.authorization.is_allowlisted_tooling()
+    }
+
+    pub(crate) fn is_rollout_allowlisted(&self) -> bool {
+        self.authorization.is_rollout_allowlisted()
+    }
+
+    pub(crate) fn repo_region_acls(&self) -> &[String] {
+        &self.repo_region_acls
+    }
+
+    pub(crate) fn restriction_roots(&self) -> &[NonRootMPath] {
+        &self.restriction_roots
+    }
+
+    pub(crate) fn restriction_root_strings(&self) -> Vec<String> {
+        self.restriction_roots
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub(crate) fn sorted_repo_region_acls(&self) -> Vec<String> {
+        let mut acls = self.repo_region_acls.clone();
+        acls.sort();
+        acls
+    }
+
+    pub(crate) fn sorted_restriction_root_strings(&self) -> Vec<String> {
+        let mut paths = self.restriction_root_strings();
+        paths.sort();
+        paths
+    }
+
+    pub(crate) fn into_restriction_check_result(self) -> RestrictionCheckResult {
+        build_restriction_check_result(self.has_authorization(), self.restriction_roots)
     }
 }
 
@@ -299,16 +519,21 @@ pub(crate) async fn get_manifest_restriction_check(
     check_manifest_restriction_infos(ctx, restricted_paths, restriction_info).await
 }
 
-/// Check a path against one restriction source.
-pub(crate) async fn check_path_restriction(
+/// Check a path against one selected restriction source.
+///
+/// Normal callers should use `get_path_restriction_check`, which follows the
+/// repository's configured lookup behavior. This helper exists for
+/// source-comparison paths that must fetch config and AclManifest independently
+/// before logging or selecting an authoritative result.
+pub(crate) async fn check_path_restriction_from_source(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     path: NonRootMPath,
     source: PathRestrictionSource,
-) -> Result<SourceRestrictionCheckResult> {
+) -> Result<Vec<PathRestrictionCheckResult>> {
     match source {
         PathRestrictionSource::Config => {
-            check_config_path_authorization(ctx, restricted_paths, &path).await
+            check_config_path_restriction_infos(ctx, restricted_paths, &path).await
         }
         PathRestrictionSource::AclManifest(cs_id) => {
             let restriction_info = restriction_info::get_path_restriction_info_from_acl_manifest(
@@ -319,52 +544,33 @@ pub(crate) async fn check_path_restriction(
             )
             .await
             .context("find AclManifest restrictions for path-side fetch")?;
-            let restriction_acls = parse_restriction_acls(&restriction_info)?;
-            check_path_authorization(ctx, restricted_paths, restriction_info, restriction_acls)
-                .await
+            check_path_restriction_infos(ctx, restricted_paths, restriction_info).await
         }
     }
 }
 
-/// Check a manifest against one restriction source.
-pub(crate) async fn check_manifest_restriction(
+/// Check a manifest against one selected restriction source.
+///
+/// Normal callers should use `get_manifest_restriction_check`, which exposes
+/// the configured manifest check primitive. This helper exists for
+/// source-comparison paths that need separate config and AclManifest results.
+pub(crate) async fn check_manifest_restriction_from_source(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     manifest_id: ManifestId,
     manifest_type: ManifestType,
     source: ManifestRestrictionSource,
-) -> Result<SourceRestrictionCheckResult> {
-    let restriction_info = match source {
-        ManifestRestrictionSource::Config => {
-            restriction_info::get_manifest_restriction_info_from_config(
-                restricted_paths,
-                ctx,
-                &manifest_id,
-                &manifest_type,
-            )
-            .await
-            .context("find config restrictions for manifest-side fetch")?
-        }
-        ManifestRestrictionSource::AclManifest => {
-            restriction_info::get_manifest_restriction_info_from_acl_manifest(
-                restricted_paths,
-                ctx,
-                &manifest_id,
-                &manifest_type,
-            )
-            .await
-            .context("find AclManifest restrictions for manifest-side fetch")?
-        }
-    };
-    check_manifest_authorization(ctx, restricted_paths, restriction_info).await
+) -> Result<Vec<ManifestRestrictionCheckResult>> {
+    get_manifest_restriction_check(restricted_paths, ctx, &manifest_id, &manifest_type, source)
+        .await
 }
 
-pub(crate) async fn check_config_path_authorization(
+async fn check_config_path_restriction_infos(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     path: &NonRootMPath,
-) -> Result<SourceRestrictionCheckResult> {
-    let (restriction_info, restriction_acls) = restricted_paths
+) -> Result<Vec<PathRestrictionCheckResult>> {
+    let restriction_info = restricted_paths
         .config()
         .path_acls
         .iter()
@@ -380,9 +586,30 @@ pub(crate) async fn check_config_path_authorization(
                 acl.clone(),
             )
         })
-        .unzip();
+        .collect::<Vec<_>>();
+    if restriction_info.is_empty() {
+        return Ok(vec![]);
+    }
 
-    check_path_authorization(ctx, restricted_paths, restriction_info, restriction_acls).await
+    let allowlist_authorization =
+        check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
+    stream::iter(restriction_info)
+        .map(|(restriction_info, acl)| async move {
+            let authorization = check_restriction_authorization_with_acl(
+                ctx,
+                restricted_paths,
+                &acl,
+                allowlist_authorization,
+            )
+            .await?;
+            Ok(PathRestrictionCheckResult::new(
+                restriction_info,
+                authorization,
+            ))
+        })
+        .buffered(100)
+        .try_collect()
+        .await
 }
 
 pub async fn check_path_restriction_infos(
@@ -466,97 +693,4 @@ async fn check_restriction_authorization_with_acl(
     let has_acl_access =
         has_read_access_to_repo_region_acls(ctx, restricted_paths.acl_provider(), &[acl]).await?;
     Ok(allowlist_authorization.into_authorization_check_result(has_acl_access))
-}
-
-async fn check_path_authorization(
-    ctx: &CoreContext,
-    restricted_paths: &RestrictedPaths,
-    restriction_info: Vec<PathRestrictionInfo>,
-    restriction_acls: Vec<MononokeIdentity>,
-) -> Result<SourceRestrictionCheckResult> {
-    if restriction_info.is_empty() {
-        return Ok(SourceRestrictionCheckResult::unrestricted(Some(vec![])));
-    }
-
-    let restriction_paths = restriction_info
-        .iter()
-        .map(|info| info.restriction_root.clone())
-        .collect::<Vec<_>>();
-    let acl_refs = restriction_acls.iter().collect::<Vec<_>>();
-    let authorization = check_authorization(
-        ctx,
-        restricted_paths.acl_provider(),
-        &acl_refs,
-        restricted_paths.config().tooling_allowlist_group.as_deref(),
-        restricted_paths.config().rollout_allowlist_group.as_deref(),
-    )
-    .await?;
-
-    Ok(SourceRestrictionCheckResult::new(
-        authorization.has_authorization(),
-        authorization.has_acl_access,
-        restriction_acls,
-        Some(restriction_paths),
-        authorization.is_allowlisted_tooling,
-        authorization.is_rollout_allowlisted,
-    ))
-}
-
-fn parse_restriction_acls(
-    restriction_info: &[PathRestrictionInfo],
-) -> Result<Vec<MononokeIdentity>> {
-    restriction_info
-        .iter()
-        .map(|info| {
-            MononokeIdentity::from_str(&info.repo_region_acl).with_context(|| {
-                format!("Failed to parse repo_region_acl {}", info.repo_region_acl)
-            })
-        })
-        .collect()
-}
-
-async fn check_manifest_authorization(
-    ctx: &CoreContext,
-    restricted_paths: &RestrictedPaths,
-    restriction_info: Vec<ManifestRestrictionInfo>,
-) -> Result<SourceRestrictionCheckResult> {
-    if restriction_info.is_empty() {
-        return Ok(SourceRestrictionCheckResult::unrestricted(Some(vec![])));
-    }
-
-    let restriction_acls = restriction_info
-        .iter()
-        .map(|info| {
-            MononokeIdentity::from_str(&info.repo_region_acl).with_context(|| {
-                format!("Failed to parse repo_region_acl {}", info.repo_region_acl)
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let matched_restriction_paths = restriction_info
-        .iter()
-        .filter_map(|info| info.restriction_root.clone())
-        .collect::<Vec<_>>();
-    let matched_restriction_paths = if matched_restriction_paths.is_empty() {
-        None
-    } else {
-        Some(matched_restriction_paths)
-    };
-    let acl_refs = restriction_acls.iter().collect::<Vec<_>>();
-    let authorization = check_authorization(
-        ctx,
-        restricted_paths.acl_provider(),
-        &acl_refs,
-        restricted_paths.config().tooling_allowlist_group.as_deref(),
-        restricted_paths.config().rollout_allowlist_group.as_deref(),
-    )
-    .await?;
-
-    Ok(SourceRestrictionCheckResult::new(
-        authorization.has_authorization(),
-        authorization.has_acl_access,
-        restriction_acls,
-        matched_restriction_paths,
-        authorization.is_allowlisted_tooling,
-        authorization.is_rollout_allowlisted,
-    ))
 }

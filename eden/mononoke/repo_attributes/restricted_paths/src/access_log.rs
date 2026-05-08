@@ -7,6 +7,7 @@
 
 // Log access to restricted paths
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -33,6 +34,11 @@ use crate::restriction_check;
 use crate::restriction_check::ManifestRestrictionSource;
 use crate::restriction_check::PathRestrictionSource;
 use crate::restriction_check::RestrictionCheckResult;
+use crate::restriction_check::SourceRestrictionCheck;
+use crate::restriction_check::SourceRestrictionChecks;
+use crate::restriction_check::SourceRestrictionError;
+use crate::restriction_check::SourceRestrictionResult;
+use crate::restriction_check::SourceRestrictionSummary;
 
 #[cfg(test)]
 mod tests;
@@ -45,9 +51,6 @@ pub(crate) enum RestrictedPathAccessData {
     /// When the tree is accessed by path
     FullPath { full_path: NonRootMPath },
 }
-
-pub(crate) type SourceRestrictionResult =
-    std::result::Result<Arc<SourceRestrictionCheckResult>, Arc<anyhow::Error>>;
 
 /// Authorization fields that are logged at the top level of a restricted-path
 /// access row.
@@ -102,52 +105,6 @@ impl SourceComparisonLogContext {
         if let Some(shadow_mismatch_detail) = self.shadow_mismatch_detail {
             scuba.add("shadow_mismatch_detail", shadow_mismatch_detail);
         }
-    }
-}
-
-/// Authorization and restriction data for one logging source.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SourceRestrictionCheckResult {
-    pub(crate) has_authorization: bool,
-    pub(crate) has_acl_access: bool,
-    pub(crate) restriction_acls: Vec<MononokeIdentity>,
-    pub(crate) restriction_paths: Option<Vec<NonRootMPath>>,
-    pub(crate) is_allowlisted_tooling: bool,
-    pub(crate) is_rollout_allowlisted: bool,
-}
-
-impl SourceRestrictionCheckResult {
-    pub(crate) fn new(
-        has_authorization: bool,
-        has_acl_access: bool,
-        restriction_acls: Vec<MononokeIdentity>,
-        restriction_paths: Option<Vec<NonRootMPath>>,
-        is_allowlisted_tooling: bool,
-        is_rollout_allowlisted: bool,
-    ) -> Self {
-        Self {
-            has_authorization,
-            has_acl_access,
-            restriction_acls,
-            restriction_paths,
-            is_allowlisted_tooling,
-            is_rollout_allowlisted,
-        }
-    }
-
-    pub(crate) fn unrestricted(restriction_paths: Option<Vec<NonRootMPath>>) -> Self {
-        Self {
-            has_authorization: true,
-            has_acl_access: true,
-            restriction_acls: Vec::new(),
-            restriction_paths,
-            is_allowlisted_tooling: false,
-            is_rollout_allowlisted: false,
-        }
-    }
-
-    fn is_restricted(&self) -> bool {
-        !self.restriction_acls.is_empty()
     }
 }
 
@@ -234,33 +191,35 @@ pub async fn is_part_of_group(
         .await)
 }
 
-pub(crate) async fn log_shadow_access_by_manifest_if_restricted(
+pub(crate) async fn log_source_comparison_access_by_manifest_if_restricted(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,
     manifest_id: ManifestId,
     manifest_type: ManifestType,
 ) -> Result<RestrictionCheckResult> {
-    let config_result = source_result(
-        restriction_check::check_manifest_restriction(
-            ctx,
-            restricted_paths,
-            manifest_id.clone(),
-            manifest_type.clone(),
-            ManifestRestrictionSource::Config,
-        )
-        .await,
-    );
+    let config_result = restriction_check::check_manifest_restriction_from_source(
+        ctx,
+        restricted_paths,
+        manifest_id.clone(),
+        manifest_type.clone(),
+        ManifestRestrictionSource::Config,
+    )
+    .await
+    .map(SourceRestrictionChecks::new)
+    .map_err(SourceRestrictionError::from);
     let acl_manifest_result = if manifest_type == ManifestType::HgAugmented {
-        Some(source_result(
-            restriction_check::check_manifest_restriction(
+        Some(
+            restriction_check::check_manifest_restriction_from_source(
                 ctx,
                 restricted_paths,
                 manifest_id.clone(),
                 manifest_type.clone(),
                 ManifestRestrictionSource::AclManifest,
             )
-            .await,
-        ))
+            .await
+            .map(SourceRestrictionChecks::new)
+            .map_err(SourceRestrictionError::from),
+        )
     } else {
         None
     };
@@ -280,44 +239,38 @@ pub(crate) async fn log_shadow_access_by_manifest_if_restricted(
             log_result?;
             config
         }
-        Err(err) => {
-            return match Arc::try_unwrap(err) {
-                Ok(err) => Err(err),
-                Err(err) => Err(anyhow::anyhow!("{:#}", err)),
-            };
-        }
+        Err(err) => return Err(anyhow::Error::from(err)),
     };
-    Ok(RestrictionCheckResult {
-        has_authorization: config.has_authorization,
-        restriction_roots: config.restriction_paths.clone().unwrap_or_default(),
-    })
+    Ok(SourceRestrictionSummary::from_checks(config.as_ref()).into_restriction_check_result())
 }
 
-pub(crate) async fn log_shadow_access_by_path_if_restricted(
+pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
     restricted_paths: &RestrictedPaths,
     ctx: &CoreContext,
     path: NonRootMPath,
     cs_id: Option<ChangesetId>,
 ) -> Result<RestrictionCheckResult> {
-    let config_result = source_result(
-        restriction_check::check_path_restriction(
-            ctx,
-            restricted_paths,
-            path.clone(),
-            PathRestrictionSource::Config,
-        )
-        .await,
-    );
+    let config_result = restriction_check::check_path_restriction_from_source(
+        ctx,
+        restricted_paths,
+        path.clone(),
+        PathRestrictionSource::Config,
+    )
+    .await
+    .map(SourceRestrictionChecks::new)
+    .map_err(SourceRestrictionError::from);
     let acl_manifest_result = match cs_id {
-        Some(cs_id) => Some(source_result(
-            restriction_check::check_path_restriction(
+        Some(cs_id) => Some(
+            restriction_check::check_path_restriction_from_source(
                 ctx,
                 restricted_paths,
                 path.clone(),
                 PathRestrictionSource::AclManifest(cs_id),
             )
-            .await,
-        )),
+            .await
+            .map(SourceRestrictionChecks::new)
+            .map_err(SourceRestrictionError::from),
+        ),
         None => None,
     };
 
@@ -336,39 +289,49 @@ pub(crate) async fn log_shadow_access_by_path_if_restricted(
             log_result?;
             config
         }
-        Err(err) => {
-            return match Arc::try_unwrap(err) {
-                Ok(err) => Err(err),
-                Err(err) => Err(anyhow::anyhow!("{:#}", err)),
-            };
-        }
+        Err(err) => return Err(anyhow::Error::from(err)),
     };
-    Ok(RestrictionCheckResult {
-        has_authorization: config.has_authorization,
-        restriction_roots: config.restriction_paths.clone().unwrap_or_default(),
-    })
+    Ok(SourceRestrictionSummary::from_checks(config.as_ref()).into_restriction_check_result())
 }
 
-/// Log compact Shadow comparison results to Scuba.
+/// Log compact source-comparison results to Scuba.
 ///
-/// This emits one row when a Shadow-mode lookup source either finds a
-/// restriction or fails. Aggregate authorization fields remain
-/// config-authoritative, while source disagreement is summarized with compact
-/// mismatch fields. If every available source completed unrestricted, no row
-/// is written.
-pub(crate) fn log_source_results_to_scuba(
+/// This emits one row when a source-comparison lookup either finds a
+/// restriction or fails. Aggregate fields use the config result, while source
+/// disagreement is summarized with compact mismatch fields. If every available
+/// source completed unrestricted, no row is written.
+pub(crate) fn log_source_results_to_scuba<T: SourceRestrictionCheck>(
     ctx: &CoreContext,
     repo_id: RepositoryId,
-    config_result: &SourceRestrictionResult,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+    config_result: &SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     acl_manifest_mode: AclManifestMode,
     access_data: RestrictedPathAccessData,
     scuba: MononokeScubaSampleBuilder,
 ) -> Result<()> {
-    let Some(source_comparison) =
-        source_comparison_log_context(config_result, acl_manifest_result, acl_manifest_mode)
-    else {
+    let config_source = successful_source_data(SourceKind::Config, Some(config_result));
+    let acl_manifest_source = successful_source_data(SourceKind::AclManifest, acl_manifest_result);
+    let Some(source_comparison) = source_comparison_log_context(
+        config_result,
+        acl_manifest_result,
+        acl_manifest_mode,
+        config_source.as_ref(),
+        acl_manifest_source.as_ref(),
+    ) else {
         return Ok(());
+    };
+
+    let restriction_acls = match config_source.as_ref() {
+        Some(source) => source
+            .summary
+            .repo_region_acls()
+            .iter()
+            .map(|acl| {
+                MononokeIdentity::from_str(acl)
+                    .with_context(|| format!("Failed to parse repo_region_acl {}", acl))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => Vec::new(),
     };
 
     log_access_to_scuba(
@@ -376,22 +339,22 @@ pub(crate) fn log_source_results_to_scuba(
         RestrictedPathLogData {
             repo_id,
             access_data,
-            aggregate: config_result
-                .as_ref()
-                .ok()
-                .map(|config| RestrictedPathAggregateLogData {
-                    restricted_paths: config.restriction_paths.as_deref(),
+            aggregate: config_source.as_ref().map(|source| {
+                let summary = &source.summary;
+                RestrictedPathAggregateLogData {
+                    restricted_paths: Some(summary.restriction_roots()),
                     authorization: LoggedAuthorization {
-                        has_authorization: config.has_authorization,
-                        is_allowlisted_tooling: config.is_allowlisted_tooling,
-                        is_rollout_allowlisted: config.is_rollout_allowlisted,
-                        has_acl_access: config.has_acl_access,
+                        has_authorization: summary.has_authorization(),
+                        is_allowlisted_tooling: summary.is_allowlisted_tooling(),
+                        is_rollout_allowlisted: summary.is_rollout_allowlisted(),
+                        has_acl_access: summary.has_acl_access(),
                     },
-                    acls: config.restriction_acls.iter().collect(),
-                }),
+                    acls: restriction_acls.iter().collect(),
+                }
+            }),
             considered_restricted_by: considered_restricted_by_for_source_results(
-                config_result,
-                acl_manifest_result,
+                config_source.as_ref(),
+                acl_manifest_source.as_ref(),
             ),
             source_comparison: Some(source_comparison),
         },
@@ -408,13 +371,15 @@ pub(crate) fn log_source_results_to_scuba(
 ///
 /// Returns `None` when every source that ran completed unrestricted, matching
 /// the old behavior of skipping those rows entirely.
-fn source_comparison_log_context(
-    config_result: &SourceRestrictionResult,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+fn source_comparison_log_context<T: SourceRestrictionCheck>(
+    config_result: &SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
     acl_manifest_mode: AclManifestMode,
+    config_source: Option<&SuccessfulSourceData>,
+    acl_manifest_source: Option<&SuccessfulSourceData>,
 ) -> Option<SourceComparisonLogContext> {
-    let any_source_restricted =
-        is_source_restricted(Some(config_result)) || is_source_restricted(acl_manifest_result);
+    let any_source_restricted = config_source.is_some_and(|source| source.restricted)
+        || acl_manifest_source.is_some_and(|source| source.restricted);
     let any_source_failed =
         is_source_error(Some(config_result)) || is_source_error(acl_manifest_result);
     if !any_source_restricted && !any_source_failed {
@@ -429,59 +394,59 @@ fn source_comparison_log_context(
         shadow_mismatch: shadow_mismatch_for_source_results(
             Some(config_result),
             acl_manifest_result,
+            config_source,
+            acl_manifest_source,
         ),
-        shadow_mismatch_detail: shadow_mismatch_detail_for_source_results(
+        shadow_mismatch_detail: source_mismatch_detail_for_source_results(
             config_result,
             acl_manifest_result,
+            config_source,
+            acl_manifest_source,
         ),
     })
 }
 
-fn source_result<T>(result: Result<T>) -> SourceRestrictionResult
-where
-    T: Into<SourceRestrictionCheckResult>,
-{
-    result
-        .map(|result| Arc::new(result.into()))
-        .map_err(Arc::new)
-}
-
 fn considered_restricted_by_for_source_results(
-    config_result: &SourceRestrictionResult,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+    config_source: Option<&SuccessfulSourceData>,
+    acl_manifest_source: Option<&SuccessfulSourceData>,
 ) -> Vec<String> {
     let mut restricted_sources = Vec::new();
-    if is_source_restricted(Some(config_result)) {
+    if config_source.is_some_and(|source| source.restricted) {
         restricted_sources.push(SourceKind::Config.as_scuba_value().to_string());
     }
-    if is_source_restricted(acl_manifest_result) {
+    if acl_manifest_source.is_some_and(|source| source.restricted) {
         restricted_sources.push(SourceKind::AclManifest.as_scuba_value().to_string());
     }
     restricted_sources
 }
 
-fn is_source_restricted(result: Option<&SourceRestrictionResult>) -> bool {
-    matches!(result, Some(Ok(result)) if result.is_restricted())
-}
-
-fn is_source_error(result: Option<&SourceRestrictionResult>) -> bool {
+fn is_source_error<T: SourceRestrictionCheck>(result: Option<&SourceRestrictionResult<T>>) -> bool {
     matches!(result, Some(Err(_)))
 }
 
-fn shadow_mismatch_detail_for_source_results(
-    config_result: &SourceRestrictionResult,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+fn source_mismatch_detail_for_source_results<T: SourceRestrictionCheck>(
+    config_result: &SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
+    config_source: Option<&SuccessfulSourceData>,
+    acl_manifest_source: Option<&SuccessfulSourceData>,
 ) -> Option<String> {
-    let differences = shadow_mismatch_differences(config_result, acl_manifest_result);
+    let differences = source_mismatch_differences(
+        config_result,
+        acl_manifest_result,
+        config_source,
+        acl_manifest_source,
+    );
     if differences.is_empty() {
         return None;
     }
 
     let mut detail = serde_json::Map::new();
-    if let Some(config_detail) = source_result_detail(Some(config_result)) {
+    if let Some(config_detail) = source_result_detail(Some(config_result), config_source) {
         detail.insert("config".to_string(), config_detail);
     }
-    if let Some(acl_manifest_detail) = source_result_detail(acl_manifest_result) {
+    if let Some(acl_manifest_detail) =
+        source_result_detail(acl_manifest_result, acl_manifest_source)
+    {
         detail.insert("acl_manifest".to_string(), acl_manifest_detail);
     }
     detail.insert("differences".to_string(), json!(differences));
@@ -495,18 +460,12 @@ fn shadow_mismatch_detail_for_source_results(
 /// authorization outcome, or restriction ACLs. Restriction-root differences are
 /// intentionally excluded because AclManifest cannot provide roots by design;
 /// they remain in `shadow_mismatch_detail` for diagnosis.
-fn shadow_mismatch_for_source_results(
-    config_result: Option<&SourceRestrictionResult>,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+fn shadow_mismatch_for_source_results<T: SourceRestrictionCheck>(
+    config_result: Option<&SourceRestrictionResult<T>>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
+    config_source: Option<&SuccessfulSourceData>,
+    acl_manifest_source: Option<&SuccessfulSourceData>,
 ) -> bool {
-    let restriction_comparison = |source: SourceComparisonData| {
-        (
-            source.restricted,
-            source.has_authorization,
-            source.restriction_acls,
-        )
-    };
-
     let error_mismatch = source_error_status(config_result)
         .zip(source_error_status(acl_manifest_result))
         .is_some_and(|(config_error, acl_manifest_error)| config_error != acl_manifest_error);
@@ -515,42 +474,56 @@ fn shadow_mismatch_for_source_results(
         return true;
     }
 
-    successful_source_result_comparison(config_result)
-        .zip(successful_source_result_comparison(acl_manifest_result))
+    config_source
+        .zip(acl_manifest_source)
         .is_some_and(|(config, acl_manifest)| {
-            restriction_comparison(config) != restriction_comparison(acl_manifest)
+            let config = &config.comparison;
+            let acl_manifest = &acl_manifest.comparison;
+            (
+                config.restricted,
+                config.has_authorization,
+                config.restriction_acls.as_slice(),
+            ) != (
+                acl_manifest.restricted,
+                acl_manifest.has_authorization,
+                acl_manifest.restriction_acls.as_slice(),
+            )
         })
 }
 
-fn source_error_status(result: Option<&SourceRestrictionResult>) -> Option<bool> {
+fn source_error_status<T: SourceRestrictionCheck>(
+    result: Option<&SourceRestrictionResult<T>>,
+) -> Option<bool> {
     result.map(|result| result.is_err())
 }
 
-fn shadow_mismatch_differences(
-    config_result: &SourceRestrictionResult,
-    acl_manifest_result: Option<&SourceRestrictionResult>,
+fn source_mismatch_differences<T: SourceRestrictionCheck>(
+    config_result: &SourceRestrictionResult<T>,
+    acl_manifest_result: Option<&SourceRestrictionResult<T>>,
+    config_source: Option<&SuccessfulSourceData>,
+    acl_manifest_source: Option<&SuccessfulSourceData>,
 ) -> Vec<&'static str> {
     let error_differences = [
         is_source_error(Some(config_result)).then_some(SourceKind::Config.error_field()),
         is_source_error(acl_manifest_result).then_some(SourceKind::AclManifest.error_field()),
     ];
 
-    let successful_source_differences = match (
-        successful_source_result_comparison(Some(config_result)),
-        successful_source_result_comparison(acl_manifest_result),
-    ) {
+    let successful_source_differences = match (config_source, acl_manifest_source) {
         (Some(config), Some(acl_manifest)) => [
-            (config.restricted != acl_manifest.restricted, "restricted"),
             (
-                config.has_authorization != acl_manifest.has_authorization,
+                config.comparison.restricted != acl_manifest.comparison.restricted,
+                "restricted",
+            ),
+            (
+                config.comparison.has_authorization != acl_manifest.comparison.has_authorization,
                 "has_authorization",
             ),
             (
-                config.restriction_acls != acl_manifest.restriction_acls,
+                config.comparison.restriction_acls != acl_manifest.comparison.restriction_acls,
                 "restriction_acls",
             ),
             (
-                config.restriction_paths != acl_manifest.restriction_paths,
+                config.comparison.restriction_paths != acl_manifest.comparison.restriction_paths,
                 "restriction_paths",
             ),
         ]
@@ -567,67 +540,70 @@ fn shadow_mismatch_differences(
         .collect()
 }
 
-fn source_result_detail(result: Option<&SourceRestrictionResult>) -> Option<Value> {
+fn source_result_detail(
+    result: Option<&SourceRestrictionResult<impl SourceRestrictionCheck>>,
+    source: Option<&SuccessfulSourceData>,
+) -> Option<Value> {
     match result? {
-        Ok(result) => Some(successful_source_detail(result)),
+        Ok(_) => source.map(successful_source_detail),
         Err(err) => Some(json!({
             "error": format!("{:#}", err),
         })),
     }
 }
 
-fn successful_source_detail(result: &SourceRestrictionCheckResult) -> Value {
+fn successful_source_detail(source: &SuccessfulSourceData) -> Value {
     json!({
-        "restricted": result.is_restricted(),
-        "has_authorization": result.has_authorization,
-        "restriction_acls": sorted_acls_to_strings(&result.restriction_acls),
-        "restriction_paths": result
-            .restriction_paths
-            .as_deref()
-            .map(sorted_paths_to_strings),
+        "restricted": source.comparison.restricted,
+        "has_authorization": source.comparison.has_authorization,
+        "restriction_acls": &source.comparison.restriction_acls,
+        "restriction_paths": &source.comparison.restriction_paths,
     })
 }
 
-fn successful_source_result_comparison(
-    result: Option<&SourceRestrictionResult>,
-) -> Option<SourceComparisonData> {
+fn successful_source_data<T: SourceRestrictionCheck>(
+    source_kind: SourceKind,
+    result: Option<&SourceRestrictionResult<T>>,
+) -> Option<SuccessfulSourceData> {
     let result = match result? {
         Ok(result) => result,
         Err(_) => return None,
     };
-    Some(successful_source_comparison(result))
+    let summary = SourceRestrictionSummary::from_checks(result.as_ref());
+    let restricted = result.is_restricted();
+    let comparison = SourceComparisonData {
+        restricted,
+        has_authorization: summary.has_authorization(),
+        restriction_acls: summary.sorted_repo_region_acls(),
+        restriction_paths: restriction_paths_for_source::<T>(source_kind, &summary),
+    };
+    Some(SuccessfulSourceData {
+        restricted,
+        summary,
+        comparison,
+    })
 }
 
-fn successful_source_comparison(result: &SourceRestrictionCheckResult) -> SourceComparisonData {
-    SourceComparisonData {
-        restricted: result.is_restricted(),
-        has_authorization: result.has_authorization,
-        restriction_acls: sorted_acls_to_strings(&result.restriction_acls),
-        restriction_paths: result
-            .restriction_paths
-            .as_deref()
-            .map(sorted_paths_to_strings),
-    }
+fn restriction_paths_for_source<T: SourceRestrictionCheck>(
+    source_kind: SourceKind,
+    summary: &SourceRestrictionSummary,
+) -> Option<Vec<String>> {
+    (matches!(source_kind, SourceKind::Config) || T::reports_restriction_roots())
+        .then(|| summary.sorted_restriction_root_strings())
 }
 
-fn acls_to_strings(acls: &[MononokeIdentity]) -> Vec<String> {
-    acls.iter().map(ToString::to_string).collect()
+struct SuccessfulSourceData {
+    restricted: bool,
+    summary: SourceRestrictionSummary,
+    comparison: SourceComparisonData,
 }
 
-fn paths_to_strings(paths: &[NonRootMPath]) -> Vec<String> {
-    paths.iter().map(ToString::to_string).collect()
-}
-
-fn sorted_acls_to_strings(acls: &[MononokeIdentity]) -> Vec<String> {
-    let mut acls = acls_to_strings(acls);
-    acls.sort();
-    acls
-}
-
-fn sorted_paths_to_strings(paths: &[NonRootMPath]) -> Vec<String> {
-    let mut paths = paths_to_strings(paths);
-    paths.sort();
-    paths
+#[derive(Eq, PartialEq)]
+struct SourceComparisonData {
+    restricted: bool,
+    has_authorization: bool,
+    restriction_acls: Vec<String>,
+    restriction_paths: Option<Vec<String>>,
 }
 
 fn acl_manifest_mode_as_scuba_value(acl_manifest_mode: AclManifestMode) -> &'static str {
@@ -659,14 +635,6 @@ impl SourceKind {
             Self::AclManifest => "acl_manifest",
         }
     }
-}
-
-#[derive(Eq, PartialEq)]
-struct SourceComparisonData {
-    restricted: bool,
-    has_authorization: bool,
-    restriction_acls: Vec<String>,
-    restriction_paths: Option<Vec<String>>,
 }
 
 // ============================================================================
@@ -962,7 +930,13 @@ fn log_access_to_scuba(
 
     if let Some(aggregate) = log_data.aggregate {
         if let Some(restricted_paths) = aggregate.restricted_paths {
-            scuba.add("restricted_paths", paths_to_strings(restricted_paths));
+            scuba.add(
+                "restricted_paths",
+                restricted_paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            );
         }
         scuba.add(
             "has_authorization",

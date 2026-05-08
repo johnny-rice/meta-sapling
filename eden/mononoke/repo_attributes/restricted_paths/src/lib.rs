@@ -273,7 +273,7 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
         if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
-            return access_log::log_shadow_access_by_manifest_if_restricted(
+            return access_log::log_source_comparison_access_by_manifest_if_restricted(
                 self,
                 ctx,
                 manifest_id,
@@ -341,8 +341,10 @@ impl RestrictedPaths {
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
         if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
-            return access_log::log_shadow_access_by_path_if_restricted(self, ctx, path, cs_id)
-                .await;
+            return access_log::log_source_comparison_access_by_path_if_restricted(
+                self, ctx, path, cs_id,
+            )
+            .await;
         }
 
         // Return early if the repo doesn't have any restricted paths.
