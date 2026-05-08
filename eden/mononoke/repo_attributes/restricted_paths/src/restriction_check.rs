@@ -359,7 +359,7 @@ pub(crate) async fn check_manifest_restriction(
     check_manifest_authorization(ctx, restricted_paths, restriction_info).await
 }
 
-async fn check_config_path_authorization(
+pub(crate) async fn check_config_path_authorization(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     path: &NonRootMPath,
@@ -385,7 +385,7 @@ async fn check_config_path_authorization(
     check_path_authorization(ctx, restricted_paths, restriction_info, restriction_acls).await
 }
 
-async fn check_path_restriction_infos(
+pub async fn check_path_restriction_infos(
     ctx: &CoreContext,
     restricted_paths: &RestrictedPaths,
     restriction_info: Vec<PathRestrictionInfo>,

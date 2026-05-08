@@ -64,7 +64,6 @@ use crate::errors::MononokeError;
 use crate::file::FileContext;
 use crate::repo::RepoContext;
 use crate::restricted_paths::PathAccessInfo;
-use crate::restricted_paths::build_path_access_info;
 use crate::tree::TreeContext;
 
 pub struct HistoryEntry {
@@ -791,7 +790,7 @@ impl<R: MononokeRepo> ChangesetPathHistoryContext<R> {
                 repo: &impl history_traversal::Repo,
                 descendant_id_cs_ids: Vec<(Option<CsAndPath>, Vec<CsAndPath>)>,
             ) -> Result<(), Error> {
-                let items = stream::iter(descendant_id_cs_ids.into_iter())
+                let items = stream::iter(descendant_id_cs_ids)
                     .map(|(descendant_cs_id, cs_ids)| {
                         self._visit(ctx, repo, descendant_cs_id.clone(), cs_ids.clone())
                             .map_ok(move |res| ((descendant_cs_id, cs_ids), res))
@@ -1079,21 +1078,38 @@ impl<R: MononokeRepo> ChangesetPathRestrictionContext<R> {
         let restricted_paths = self.changeset().repo_ctx().repo().restricted_paths_arc();
         let cs_id = self.changeset().id();
 
-        let restriction_infos = restricted_paths
-            .get_path_restriction_info(self.changeset().ctx(), Some(cs_id), &[path])
-            .await?;
-
-        if restriction_infos.is_empty() {
-            return Ok(vec![]);
+        if check_permissions {
+            let restriction_checks = restricted_paths
+                .get_path_restriction_check(
+                    self.changeset().ctx(),
+                    Some(cs_id),
+                    std::slice::from_ref(&path),
+                )
+                .await?;
+            return Ok(restriction_checks
+                .into_iter()
+                .map(|restriction_check| PathAccessInfo {
+                    has_access: Some(restriction_check.has_authorization()),
+                    restriction: restriction_check.into_restriction_info(),
+                })
+                .collect());
         }
 
-        build_path_access_info(
-            self.changeset().ctx(),
-            restricted_paths.acl_provider(),
-            restriction_infos,
-            check_permissions,
-        )
-        .await
+        let restriction_infos = restricted_paths
+            .get_path_restriction_info(
+                self.changeset().ctx(),
+                Some(cs_id),
+                std::slice::from_ref(&path),
+            )
+            .await?;
+
+        Ok(restriction_infos
+            .into_iter()
+            .map(|restriction| PathAccessInfo {
+                restriction,
+                has_access: None,
+            })
+            .collect())
     }
 
     /// Find all restricted paths that are descendants of this path.

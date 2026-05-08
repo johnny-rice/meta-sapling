@@ -37,12 +37,12 @@ use thiserror::Error;
 use tokio::task;
 
 pub use crate::access_log::ACCESS_LOG_SCUBA_TABLE;
-pub use crate::access_log::has_read_access_to_repo_region_acls;
 use crate::access_log::is_member_of_groups;
 use crate::access_log::log_access_to_restricted_path;
 pub use crate::restriction_check::ManifestRestrictionCheckResult;
 pub use crate::restriction_check::PathRestrictionCheckResult;
 pub use crate::restriction_check::RestrictionCheckResult;
+pub use crate::restriction_check::check_path_restriction_infos;
 pub use crate::restriction_info::ManifestRestrictionInfo;
 pub use crate::restriction_info::PathRestrictionInfo;
 

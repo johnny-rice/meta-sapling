@@ -81,6 +81,7 @@ use repo_derived_data::RepoDerivedDataArc;
 use repo_derived_data::RepoDerivedDataRef;
 use repo_identity::RepoIdentityRef;
 use restricted_paths::RestrictedPathsArc;
+use restricted_paths::check_path_restriction_infos;
 use skeleton_manifest::RootSkeletonManifestId;
 use skeleton_manifest_v2::RootSkeletonManifestV2Id;
 use smallvec::SmallVec;
@@ -101,7 +102,6 @@ use crate::repo::RepoContext;
 use crate::restricted_paths::PathAccessInfo;
 use crate::restricted_paths::RestrictedChangeGroup;
 use crate::restricted_paths::RestrictedPathsChangesInfo;
-use crate::restricted_paths::build_path_access_info;
 use crate::specifiers::ChangesetId;
 use crate::specifiers::GitSha1;
 use crate::specifiers::HgChangesetId;
@@ -1326,7 +1326,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
                 .find_entries(
                     self.ctx().clone(),
                     other.repo_ctx().repo().repo_blobstore().clone(),
-                    to_paths.into_iter(),
+                    to_paths,
                 )
                 .map_ok(|(path, _)| path)
                 .try_collect::<HashSet<_>>();
@@ -2071,13 +2071,26 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             .find_restricted_descendants(self.ctx(), Some(cs_id), roots)
             .await?;
 
-        build_path_access_info(
-            self.ctx(),
-            restricted_paths.acl_provider(),
-            restriction_infos,
-            check_permissions,
-        )
-        .await
+        if check_permissions {
+            let restriction_checks =
+                check_path_restriction_infos(self.ctx(), &restricted_paths, restriction_infos)
+                    .await?;
+            return Ok(restriction_checks
+                .into_iter()
+                .map(|restriction_check| PathAccessInfo {
+                    has_access: Some(restriction_check.has_authorization()),
+                    restriction: restriction_check.into_restriction_info(),
+                })
+                .collect());
+        }
+
+        Ok(restriction_infos
+            .into_iter()
+            .map(|restriction| PathAccessInfo {
+                restriction,
+                has_access: None,
+            })
+            .collect())
     }
 
     /// Determine which changed files in this changeset touch restricted paths.

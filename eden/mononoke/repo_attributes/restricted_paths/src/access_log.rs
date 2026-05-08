@@ -158,7 +158,7 @@ impl SourceRestrictionCheckResult {
 /// would silently bypass an inner restriction.
 ///
 /// Runs checks concurrently and short-circuits on the first deny or error.
-pub async fn has_read_access_to_repo_region_acls(
+pub(crate) async fn has_read_access_to_repo_region_acls(
     ctx: &CoreContext,
     acl_provider: &Arc<dyn AclProvider>,
     acls: &[&MononokeIdentity],
