@@ -256,6 +256,12 @@ class EdenServiceHandler
       std::unique_ptr<std::vector<std::string>> paths,
       std::unique_ptr<SyncBehavior> sync) override;
 
+  folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
+  semifuture_getEntryInformationImpl(
+      std::unique_ptr<std::string> mountPoint,
+      std::unique_ptr<std::vector<std::string>> paths,
+      std::unique_ptr<SyncBehavior> sync);
+
   folly::SemiFuture<std::unique_ptr<std::vector<FileInformationOrError>>>
   semifuture_getFileInformation(
       std::unique_ptr<std::string> mountPoint,

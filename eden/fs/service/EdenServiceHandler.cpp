@@ -3313,7 +3313,7 @@ void EdenServiceHandler::debugGetRawJournal(
 }
 
 folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
-EdenServiceHandler::semifuture_getEntryInformation(
+EdenServiceHandler::semifuture_getEntryInformationImpl(
     std::unique_ptr<std::string> mountPoint,
     std::unique_ptr<std::vector<std::string>> paths,
     std::unique_ptr<SyncBehavior> sync) {
@@ -3355,6 +3355,15 @@ EdenServiceHandler::semifuture_getEntryInformation(
                    return out;
                  }))
       .semi();
+}
+
+folly::SemiFuture<std::unique_ptr<std::vector<EntryInformationOrError>>>
+EdenServiceHandler::semifuture_getEntryInformation(
+    std::unique_ptr<std::string> mountPoint,
+    std::unique_ptr<std::vector<std::string>> paths,
+    std::unique_ptr<SyncBehavior> sync) {
+  return semifuture_getEntryInformationImpl(
+      std::move(mountPoint), std::move(paths), std::move(sync));
 }
 
 folly::SemiFuture<std::unique_ptr<std::vector<FileInformationOrError>>>
