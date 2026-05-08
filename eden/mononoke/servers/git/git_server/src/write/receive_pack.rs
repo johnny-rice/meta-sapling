@@ -24,12 +24,14 @@ use gotham_ext::response::BytesBody;
 use gotham_ext::response::TryIntoResponse;
 use http::Response;
 use import_tools::GitImportLfs;
+use import_tools::LfsServerUrlFormat;
 use metaconfig_types::RepoConfigRef;
 use mononoke_macros::mononoke;
 use packetline::encode::flush_to_write;
 use packetline::encode::write_text_packetline;
 use protocol::pack_processor::parse_pack;
 use repo_blobstore::RepoBlobstoreArc;
+use repo_identity::RepoIdentityRef;
 use scuba_ext::FutureStatsScubaExt;
 use sharding_observability::WeightTracker;
 use tracing::info;
@@ -190,10 +192,17 @@ async fn push(
             let max_lfs_tries =
                 justknobs::get_as::<u32>("scm/mononoke:git_server_lfs_max_retries", None)
                     .unwrap_or(MAX_LFS_RETRIES);
+            let url_format = match git_ctx.upstream_lfs_url_format() {
+                crate::UpstreamLfsUrlFormat::Dewey => LfsServerUrlFormat::LegacyDewey,
+                crate::UpstreamLfsUrlFormat::MononokeGitLfs => LfsServerUrlFormat::MononokeGitLfs {
+                    repo_name: request_context.repo.repo_identity().name().to_string(),
+                },
+            };
             GitImportLfs::new(
                 git_ctx
                     .upstream_lfs_server()?
                     .ok_or_else(|| anyhow::anyhow!("No upstream LFS server specified"))?,
+                url_format,
                 false,         // allow_not_found
                 max_lfs_tries, // max attempts
                 Some(50),      // conn_limit

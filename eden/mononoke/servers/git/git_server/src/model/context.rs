@@ -28,6 +28,7 @@ use super::Pushvars;
 use super::method::GitMethod;
 use crate::GitRepos;
 use crate::Repo;
+use crate::UpstreamLfsUrlFormat;
 use crate::errors::GitServerContextErrorKind;
 
 define_stats! {
@@ -75,6 +76,8 @@ pub struct GitServerContextInner {
     enforce_auth: bool,
     // Upstream LFS server to fetch missing LFS objects from
     upstream_lfs_server: Option<String>,
+    // URL pattern used to construct per-object fetch URLs against the upstream LFS server
+    upstream_lfs_url_format: UpstreamLfsUrlFormat,
     // Used for communicating with upstream LFS server
     tls_args: Option<TLSArgs>,
     // ACL provider for checking group membership
@@ -88,6 +91,7 @@ impl GitServerContextInner {
         repos: GitRepos,
         enforce_auth: bool,
         upstream_lfs_server: Option<String>,
+        upstream_lfs_url_format: UpstreamLfsUrlFormat,
         tls_args: Option<TLSArgs>,
         acl_provider: Arc<dyn AclProvider>,
         multi_repo_land_service_address: Option<String>,
@@ -96,6 +100,7 @@ impl GitServerContextInner {
             repos,
             enforce_auth,
             upstream_lfs_server,
+            upstream_lfs_url_format,
             tls_args,
             acl_provider,
             multi_repo_land_service_address,
@@ -115,6 +120,7 @@ impl GitServerContext {
         repos: GitRepos,
         enforce_auth: bool,
         upstream_lfs_server: Option<String>,
+        upstream_lfs_url_format: UpstreamLfsUrlFormat,
         tls_args: Option<TLSArgs>,
         acl_provider: Arc<dyn AclProvider>,
         multi_repo_land_service_address: Option<String>,
@@ -123,6 +129,7 @@ impl GitServerContext {
             repos,
             enforce_auth,
             upstream_lfs_server,
+            upstream_lfs_url_format,
             tls_args,
             acl_provider,
             multi_repo_land_service_address,
@@ -258,6 +265,13 @@ impl GitServerContext {
             .read()
             .expect("poisoned lock in git server context");
         Ok(inner.upstream_lfs_server.clone())
+    }
+
+    pub fn upstream_lfs_url_format(&self) -> UpstreamLfsUrlFormat {
+        self.inner
+            .read()
+            .expect("poisoned lock in git server context")
+            .upstream_lfs_url_format
     }
 
     pub fn tls_args(&self) -> Result<Option<TLSArgs>> {

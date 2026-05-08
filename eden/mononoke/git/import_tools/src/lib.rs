@@ -81,6 +81,7 @@ pub use crate::gitimport_objects::GitimportTarget;
 pub use crate::gitimport_objects::TagMetadata;
 pub use crate::gitimport_objects::oid_to_sha1;
 pub use crate::gitlfs::GitImportLfs;
+pub use crate::gitlfs::LfsServerUrlFormat;
 
 pub const HGGIT_MARKER_EXTRA: &str = "hg-git-rename-source";
 pub const HGGIT_MARKER_VALUE: &[u8] = b"git";

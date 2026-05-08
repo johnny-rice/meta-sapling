@@ -135,6 +135,16 @@ impl ShutdownGracePeriod for DynamicGracePeriod {
     }
 }
 
+/// URL pattern used by the upstream LFS server to serve a single object by SHA256.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum UpstreamLfsUrlFormat {
+    /// Dewey-style: `GET {server}/{sha256}`
+    #[default]
+    Dewey,
+    /// Mononoke git-LFS: `GET {server}/{repo}/download_sha256/{sha256}`
+    MononokeGitLfs,
+}
+
 /// Mononoke Git Server
 #[derive(Parser)]
 struct GitServerArgs {
@@ -172,6 +182,11 @@ struct GitServerArgs {
     /// Lfs server url to use to fetch lfs files from
     #[clap(long)]
     upstream_lfs_server: Option<String>,
+    /// URL pattern that the upstream LFS server uses to serve raw objects by SHA256.
+    /// Defaults to the Dewey-style `GET {server}/{sha256}`. Use `mononoke-git-lfs` for
+    /// the `GET {server}/{repo}/download_sha256/{sha256}` shape served by Mononoke LFS.
+    #[clap(long, value_enum, default_value_t = UpstreamLfsUrlFormat::Dewey)]
+    upstream_lfs_url_format: UpstreamLfsUrlFormat,
     /// How many times to retry fetching LFS files from the server
     /// before deciding that the file is missing.
     #[clap(long, default_value_t = 5)]
@@ -369,6 +384,7 @@ fn main(fb: FacebookInit) -> Result<(), Error> {
                 repos,
                 enforce_authorization,
                 args.upstream_lfs_server,
+                args.upstream_lfs_url_format,
                 tls_args,
                 acl_provider.clone(),
                 args.multi_repo_land_service_address,

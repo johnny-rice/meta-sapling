@@ -53,5 +53,6 @@ rust_library(
         "//eden/mononoke/repo_attributes/repo_identity:repo_identity",
         "//eden/mononoke/servers/slapi/slapi_server/context:context",
         "//eden/scm/lib/clientinfo:clientinfo",
+        "//eden/scm/lib/repo/url:repourl",
     ],
 )

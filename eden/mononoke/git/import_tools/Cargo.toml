@@ -48,6 +48,7 @@ repo_blobstore = { version = "0.1.0", path = "../../repo_attributes/repo_blobsto
 repo_derived_data = { version = "0.1.0", path = "../../repo_attributes/repo_derived_data" }
 repo_identity = { version = "0.1.0", path = "../../repo_attributes/repo_identity" }
 sapling-clientinfo = { version = "0.1.0", path = "../../../scm/lib/clientinfo" }
+sapling-repourl = { version = "0.1.0", path = "../../../scm/lib/repo/url" }
 scuba_ext = { version = "0.1.0", path = "../../common/scuba_ext" }
 smallvec = { version = "1.15", features = ["impl_bincode", "serde", "specialization", "union", "write"] }
 sorted_vector_map = { version = "0.2.1", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

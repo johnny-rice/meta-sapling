@@ -38,12 +38,41 @@ use mononoke_types::hash;
 use openssl::ssl::SslConnector;
 use openssl::ssl::SslFiletype;
 use openssl::ssl::SslMethod;
+use repourl::encode_repo_name;
 use tls::TLSArgs;
 use tokio::sync::Semaphore;
 use tokio::time::Duration;
 use tokio::time::sleep;
 use tracing::error;
 use tracing::warn;
+
+/// URL pattern used by the upstream LFS server to serve a single object keyed by SHA256.
+/// `LegacyDewey` matches Dewey's bare-suffix scheme; `MononokeGitLfs` matches the
+/// Mononoke LFS server's `/{repo}/download_sha256/{oid}` route.
+#[derive(Clone, Debug, Default)]
+pub enum LfsServerUrlFormat {
+    /// `GET {server}/{sha256}`
+    #[default]
+    LegacyDewey,
+    /// `GET {server}/{repo_name}/download_sha256/{sha256}`
+    MononokeGitLfs { repo_name: String },
+}
+
+impl LfsServerUrlFormat {
+    fn build_object_url(&self, lfs_server: &str, sha256: &hash::Sha256) -> Result<Uri, Error> {
+        let base = lfs_server.trim_end_matches('/');
+        let url = match self {
+            Self::LegacyDewey => format!("{base}/{sha256}"),
+            Self::MononokeGitLfs { repo_name } => {
+                format!(
+                    "{base}/{}/download_sha256/{sha256}",
+                    encode_repo_name(repo_name),
+                )
+            }
+        };
+        url.parse::<Uri>().map_err(Error::from)
+    }
+}
 
 /// Module to be passed into gitimport that defines how LFS files are imported.
 /// The default will disable any LFS support (and the metadata of files pointing to LFS files
@@ -54,6 +83,8 @@ use tracing::warn;
 pub struct GitImportLfsInner {
     /// Server information.
     lfs_server: String,
+    /// URL pattern used to construct per-object fetch URLs.
+    url_format: LfsServerUrlFormat,
     /// How to deal with the case when the file does not exist on the LFS server.
     /// allow_not_found=false
     ///   A non existing LFS file considered unrecoverable error and bail out
@@ -95,6 +126,7 @@ impl GitImportLfs {
     }
     pub fn new(
         lfs_server: String,
+        url_format: LfsServerUrlFormat,
         allow_not_found: bool,
         max_attempts: u32,
         conn_limit: Option<usize>,
@@ -114,6 +146,7 @@ impl GitImportLfs {
         let client = Client::builder(TokioExecutor::new()).build(connector);
         let inner = GitImportLfsInner {
             lfs_server,
+            url_format,
             allow_not_found,
             max_attempts,
             time_ms_between_attempts: 10000,
@@ -152,9 +185,9 @@ impl GitImportLfs {
             format_err!("GitImportLfs::fetch_bytes_internal called on disabled GitImportLfs")
         })?;
 
-        let uri = [&inner.lfs_server, "/", &metadata.sha256.to_string()]
-            .concat()
-            .parse::<Uri>()?;
+        let uri = inner
+            .url_format
+            .build_object_url(&inner.lfs_server, &metadata.sha256)?;
         let mut req = Request::get(uri.clone())
             .body(Full::new(Bytes::new()))
             .context("creating LFS fetch request")?;
@@ -276,5 +309,92 @@ impl GitImportLfs {
             f(ctx, metadata, req, Box::new(bstream), fetch_result).await
         })
         .await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mononoke_macros::mononoke;
+
+    use super::*;
+
+    fn sha256_fixture() -> hash::Sha256 {
+        hash::Sha256::from_byte_array([0xab; 32])
+    }
+
+    #[mononoke::test]
+    fn dewey_url_shape() {
+        let uri = LfsServerUrlFormat::LegacyDewey
+            .build_object_url("https://dewey-lfs.example.com", &sha256_fixture())
+            .unwrap();
+        assert_eq!(
+            uri.to_string(),
+            format!("https://dewey-lfs.example.com/{}", sha256_fixture()),
+        );
+    }
+
+    #[mononoke::test]
+    fn mononoke_git_lfs_url_shape() {
+        let uri = LfsServerUrlFormat::MononokeGitLfs {
+            repo_name: "myrepo".to_string(),
+        }
+        .build_object_url(
+            "https://mononoke-git-lfs.internal.tfbnw.net",
+            &sha256_fixture(),
+        )
+        .unwrap();
+        assert_eq!(
+            uri.to_string(),
+            format!(
+                "https://mononoke-git-lfs.internal.tfbnw.net/myrepo/download_sha256/{}",
+                sha256_fixture(),
+            ),
+        );
+    }
+
+    #[mononoke::test]
+    fn mononoke_git_lfs_url_percent_encodes_repo_name() {
+        let uri = LfsServerUrlFormat::MononokeGitLfs {
+            repo_name: "git/foo/bar".to_string(),
+        }
+        .build_object_url(
+            "https://mononoke-git-lfs.internal.tfbnw.net",
+            &sha256_fixture(),
+        )
+        .unwrap();
+        assert_eq!(
+            uri.to_string(),
+            format!(
+                "https://mononoke-git-lfs.internal.tfbnw.net/git%2Ffoo%2Fbar/download_sha256/{}",
+                sha256_fixture(),
+            ),
+        );
+    }
+
+    #[mononoke::test]
+    fn trailing_slash_in_server_url_does_not_double_up() {
+        let uri = LfsServerUrlFormat::LegacyDewey
+            .build_object_url("https://dewey-lfs.example.com/", &sha256_fixture())
+            .unwrap();
+        assert_eq!(
+            uri.to_string(),
+            format!("https://dewey-lfs.example.com/{}", sha256_fixture()),
+        );
+
+        let uri = LfsServerUrlFormat::MononokeGitLfs {
+            repo_name: "myrepo".to_string(),
+        }
+        .build_object_url(
+            "https://mononoke-git-lfs.internal.tfbnw.net/",
+            &sha256_fixture(),
+        )
+        .unwrap();
+        assert_eq!(
+            uri.to_string(),
+            format!(
+                "https://mononoke-git-lfs.internal.tfbnw.net/myrepo/download_sha256/{}",
+                sha256_fixture(),
+            ),
+        );
     }
 }

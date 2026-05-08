@@ -58,6 +58,16 @@ function configure_lfs_client_with_legacy_server {
     git config --local http.sslKey "$TEST_CERTDIR/client0.key"
 }
 
+function configure_lfs_client_with_mononoke_server {
+    # configure LFS to push to the Mononoke LFS server's `repo` namespace
+    quiet git lfs install --local
+    git config --local lfs.url "$MONONOKE_LFS_URL"
+    git config --local http.extraHeader "x-client-info: {\"request_info\": {\"entry_point\": \"CurlTest\", \"correlator\": \"test\"}}"
+    git config --local http.sslCAInfo "$TEST_CERTDIR/root-ca.crt"
+    git config --local http.sslCert "$TEST_CERTDIR/client0.crt"
+    git config --local http.sslKey "$TEST_CERTDIR/client0.key"
+}
+
 function test_repos_for_git_lfs_import {
     test_repos_for_lfs_with_upstream
     # Start SCS

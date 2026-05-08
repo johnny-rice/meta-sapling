@@ -43,6 +43,7 @@ use import_tools::GitRepoReader;
 use import_tools::GitUploader;
 use import_tools::GitimportPreferences;
 use import_tools::GitimportTarget;
+use import_tools::LfsServerUrlFormat;
 use import_tools::ReuploadCommits;
 use import_tools::bookmark::BookmarkOperationErrorReporting;
 use import_tools::create_changeset_for_annotated_tag;
@@ -132,6 +133,16 @@ async fn derive_hg(
     Ok(())
 }
 
+/// URL pattern used by the LFS server to serve a single object by SHA256.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+enum LfsServerUrlFormatArg {
+    /// Dewey-style: `GET {server}/{sha256}`
+    #[default]
+    Dewey,
+    /// Mononoke git-LFS: `GET {server}/{repo}/download_sha256/{sha256}`
+    MononokeGitLfs,
+}
+
 /// Mononoke Git Importer
 #[derive(Parser)]
 struct GitimportArgs {
@@ -201,6 +212,11 @@ struct GitimportArgs {
     /// Lfs server url to use to fetch lfs files from
     #[clap(long)]
     lfs_server: Option<String>,
+    /// URL pattern that the LFS server uses to serve raw objects by SHA256.
+    /// Defaults to the Dewey-style `GET {server}/{sha256}`. Use `mononoke-git-lfs` for
+    /// the `GET {server}/{repo}/download_sha256/{sha256}` shape served by Mononoke LFS.
+    #[clap(long, value_enum, default_value_t = LfsServerUrlFormatArg::Dewey)]
+    lfs_server_url_format: LfsServerUrlFormatArg,
     /// TLS parameters for this service used for outbound LFS connections
     #[clap(flatten)]
     tls_args: Option<TLSArgs>,
@@ -338,15 +354,24 @@ async fn async_main(app: MononokeApp) -> Result<(), Error> {
         BackfillDerivation::AllConfiguredTypes
     };
     let lfs = match repo.repo_config().git_configs.git_lfs_interpret_pointers {
-        true => GitImportLfs::new(
-            args.lfs_server.ok_or_else(|| {
-                anyhow!("LFS server url is required when LFS is enabled in the repo config")
-            })?,
-            args.allow_dangling_lfs_pointers,
-            args.lfs_import_max_attempts,
-            Some(LFS_SIMULTANEOUS_CONNECTION_LIMIT),
-            args.tls_args,
-        )?,
+        true => {
+            let url_format = match args.lfs_server_url_format {
+                LfsServerUrlFormatArg::Dewey => LfsServerUrlFormat::LegacyDewey,
+                LfsServerUrlFormatArg::MononokeGitLfs => LfsServerUrlFormat::MononokeGitLfs {
+                    repo_name: repo.repo_identity().name().to_string(),
+                },
+            };
+            GitImportLfs::new(
+                args.lfs_server.ok_or_else(|| {
+                    anyhow!("LFS server url is required when LFS is enabled in the repo config")
+                })?,
+                url_format,
+                args.allow_dangling_lfs_pointers,
+                args.lfs_import_max_attempts,
+                Some(LFS_SIMULTANEOUS_CONNECTION_LIMIT),
+                args.tls_args,
+            )?
+        }
         false => GitImportLfs::new_disabled(),
     };
 
