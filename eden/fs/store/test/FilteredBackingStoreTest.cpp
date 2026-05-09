@@ -1269,4 +1269,48 @@ TEST_F(FakeSubstringFilteredBackingStoreTest, parseObjectIdFilteredFormat) {
   EXPECT_EQ(FilteredObjectIdType::OBJECT_TYPE_BLOB, foid.objectType());
 }
 
+TEST_F(
+    FakeSubstringFilteredBackingStoreTest,
+    restrictedTreePreservedAfterFiltering) {
+  auto [file, file_id] = wrappedStore_->putBlob("content");
+
+  // Test 1: Non-restricted tree preserves isRestricted=false
+  auto normalRootId = makeTestId("1001");
+  auto* normalRootDir = wrappedStore_->putTree(
+      normalRootId,
+      {
+          {"normal_dir", wrappedStore_->putTree({{"a.txt", file_id}})},
+          {"another_dir", wrappedStore_->putTree({{"b.txt", file_id}})},
+      });
+  EXPECT_FALSE(normalRootDir->get().isRestricted());
+
+  auto normalTreeId =
+      FilteredObjectId(RelativePath{""}, kTestFilter1, normalRootId);
+  auto normalTreeOID = ObjectId{normalTreeId.getValue()};
+  auto normalFuture = filteredStore_->getTree(
+      normalTreeOID, ObjectFetchContext::getNullContext());
+  normalRootDir->trigger();
+  auto normalTree = std::move(normalFuture).get(0ms).tree;
+  EXPECT_FALSE(normalTree->isRestricted());
+  EXPECT_NE(normalTree->find("normal_dir"_pc), normalTree->cend());
+
+  // Test 2: Restricted tree preserves isRestricted=true
+  auto restrictedRootId = makeTestId("2002");
+  auto* restrictedRootDir = wrappedStore_->putRestrictedTree(
+      restrictedRootId,
+      {
+          {"secret_dir", wrappedStore_->putTree({{"s.txt", file_id}})},
+      });
+  EXPECT_TRUE(restrictedRootDir->get().isRestricted());
+
+  auto restrictedTreeId =
+      FilteredObjectId(RelativePath{""}, kTestFilter1, restrictedRootId);
+  auto restrictedTreeOID = ObjectId{restrictedTreeId.getValue()};
+  auto restrictedFuture = filteredStore_->getTree(
+      restrictedTreeOID, ObjectFetchContext::getNullContext());
+  restrictedRootDir->trigger();
+  auto restrictedTree = std::move(restrictedFuture).get(0ms).tree;
+  EXPECT_TRUE(restrictedTree->isRestricted());
+}
+
 } // namespace facebook::eden

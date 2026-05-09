@@ -345,9 +345,14 @@ FilteredBackingStore::co_filterImpl(
       oid = ObjectId{foid.getValue()};
     }
 
-    pathMap.insert(
-        std::pair{
-            relPath.basename().copy(), TreeEntry{std::move(oid), entryType}});
+    auto treeEntry = TreeEntry{
+        std::move(oid),
+        entryType,
+        entry->second.getSize(),
+        entry->second.getContentSha1(),
+        entry->second.getContentBlake3(),
+        entry->second.isRestricted()};
+    pathMap.insert(std::pair{relPath.basename().copy(), std::move(treeEntry)});
   }
 
   // The result is a PathMap containing only unfiltered or
@@ -379,13 +384,15 @@ FilteredBackingStore::getRootTree(
         return std::move(filterFut).thenValue(
             [self,
              filterId_3 = std::move(filterId_2),
-             treeId = std::move(rootTreeResult.treeId)](
+             treeId = std::move(rootTreeResult.treeId),
+             sourceTree = std::move(rootTreeResult.tree)](
                 std::unique_ptr<PathMap<TreeEntry>> pathMap) {
               auto rootFOID =
                   FilteredObjectId{RelativePath{""}, filterId_3, treeId};
+              auto tree = sourceTree->withNewId(
+                  std::move(*pathMap), ObjectId{rootFOID.getValue()});
               auto res = GetRootTreeResult{
-                  std::make_shared<const Tree>(
-                      std::move(*pathMap), ObjectId{rootFOID.getValue()}),
+                  std::move(tree),
                   ObjectId{rootFOID.getValue()},
               };
               pathMap.reset();
@@ -415,7 +422,7 @@ FilteredBackingStore::co_getRootTree(
   auto rootFOID =
       FilteredObjectId{RelativePath{""}, filterId, rootTreeResult.treeId};
   co_return GetRootTreeResult{
-      std::make_shared<const Tree>(
+      rootTreeResult.tree->withNewId(
           std::move(*pathMap), ObjectId{rootFOID.getValue()}),
       ObjectId{rootFOID.getValue()},
   };
@@ -473,10 +480,7 @@ folly::SemiFuture<BackingStore::GetTreeResult> FilteredBackingStore::getTree(
           // Tree is recursively unfiltered - activate fast path by not
           // rewriting ids within the tree entries. We still copy the tree so we
           // can modify its oid to match the requested oid.
-          result.tree = std::make_shared<Tree>(Tree{
-              ObjectId{filteredId.getValue()},
-              result.tree->entries(),
-              result.tree->getAuxData()});
+          result.tree = result.tree->withNewId(ObjectId{filteredId.getValue()});
           return ImmediateFuture<GetTreeResult>{std::move(result)}.semi();
         }
 
@@ -485,9 +489,11 @@ folly::SemiFuture<BackingStore::GetTreeResult> FilteredBackingStore::getTree(
                   result.tree, filteredId.path(), filteredId.filter(), treeType)
             : self->filterImpl(result.tree, RelativePath{}, "", treeType);
         return std::move(filterRes)
-            .thenValue([filteredId, origin = result.origin](
+            .thenValue([filteredId,
+                        origin = result.origin,
+                        sourceTree = std::move(result.tree)](
                            std::unique_ptr<PathMap<TreeEntry>> pathMap) {
-              auto tree = std::make_shared<Tree>(
+              auto tree = sourceTree->withNewId(
                   std::move(*pathMap), ObjectId{filteredId.getValue()});
               pathMap.reset();
               return GetTreeResult{std::move(tree), origin};
@@ -515,10 +521,7 @@ FilteredBackingStore::co_getTree(
     // Tree is recursively unfiltered - activate fast path by not
     // rewriting ids within the tree entries. We still copy the tree so we
     // can modify its oid to match the requested oid.
-    result.tree = std::make_shared<Tree>(Tree{
-        ObjectId{filteredId.getValue()},
-        result.tree->entries(),
-        result.tree->getAuxData()});
+    result.tree = result.tree->withNewId(ObjectId{filteredId.getValue()});
     co_return result;
   }
 
@@ -526,7 +529,7 @@ FilteredBackingStore::co_getTree(
       ? co_await co_filterImpl(
             result.tree, filteredId.path(), filteredId.filter(), treeType)
       : co_await co_filterImpl(result.tree, RelativePath{}, "", treeType);
-  auto tree = std::make_shared<Tree>(
+  auto tree = result.tree->withNewId(
       std::move(*pathMap), ObjectId{filteredId.getValue()});
   pathMap.reset();
   co_return GetTreeResult{std::move(tree), result.origin};

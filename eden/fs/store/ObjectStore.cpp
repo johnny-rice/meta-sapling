@@ -182,8 +182,7 @@ std::shared_ptr<const Tree> changeCaseSensitivity(
   } else {
     auto treeEntries = Tree::container{
         tree->cbegin(), tree->cend(), caseSensitive}; // Explicit copy.
-    return std::make_shared<const Tree>(
-        std::move(treeEntries), tree->getObjectId());
+    return tree->withNewId(std::move(treeEntries), tree->getObjectId());
   }
 }
 

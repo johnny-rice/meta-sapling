@@ -150,6 +150,9 @@ class FilteredBackingStore
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getRootTree);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, getGlobFiles);
   FRIEND_TEST(FakeSubstringFilteredBackingStoreTest, co_getGlobFiles);
+  FRIEND_TEST(
+      FakeSubstringFilteredBackingStoreTest,
+      restrictedTreePreservedAfterFiltering);
 
   ImmediateFuture<GetRootTreeResult> getRootTree(
       const RootId& rootId,
