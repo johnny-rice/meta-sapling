@@ -404,6 +404,22 @@ StoredTree* FakeBackingStore::putTree(ObjectId id, Tree::container entries) {
   return putTreeImpl(id, std::move(entries));
 }
 
+StoredTree* FakeBackingStore::putRestrictedTree(
+    const std::initializer_list<TreeEntryData>& entryArgs) {
+  auto entries = buildTreeEntries(entryArgs);
+  auto id = computeTreeId(entries);
+  return putTreeImpl(
+      std::move(id), std::move(entries), /* isRestricted */ true);
+}
+
+StoredTree* FakeBackingStore::putRestrictedTree(
+    ObjectId id,
+    const std::initializer_list<TreeEntryData>& entryArgs) {
+  auto entries = buildTreeEntries(entryArgs);
+  return putTreeImpl(
+      std::move(id), std::move(entries), /* isRestricted */ true);
+}
+
 std::pair<StoredTree*, bool> FakeBackingStore::maybePutTree(
     const std::initializer_list<TreeEntryData>& entryArgs) {
   return maybePutTree(buildTreeEntries(entryArgs));
@@ -450,8 +466,9 @@ ObjectId FakeBackingStore::computeTreeId(const Tree::container& sortedEntries) {
 
 StoredTree* FakeBackingStore::putTreeImpl(
     ObjectId id,
-    Tree::container&& sortedEntries) {
-  auto ret = maybePutTreeImpl(id, std::move(sortedEntries));
+    Tree::container&& sortedEntries,
+    bool isRestricted) {
+  auto ret = maybePutTreeImpl(id, std::move(sortedEntries), isRestricted);
   if (!ret.second) {
     throw std::domain_error(fmt::format("tree with id {} already exists", id));
   }
@@ -460,8 +477,12 @@ StoredTree* FakeBackingStore::putTreeImpl(
 
 std::pair<StoredTree*, bool> FakeBackingStore::maybePutTreeImpl(
     ObjectId id,
-    Tree::container&& sortedEntries) {
-  auto storedTree = make_unique<StoredTree>(Tree{std::move(sortedEntries), id});
+    Tree::container&& sortedEntries,
+    bool isRestricted) {
+  auto tree = isRestricted
+      ? Tree{Tree::Restricted{}, std::move(sortedEntries), id}
+      : Tree{std::move(sortedEntries), id};
+  auto storedTree = make_unique<StoredTree>(std::move(tree));
 
   {
     auto data = data_.wlock();

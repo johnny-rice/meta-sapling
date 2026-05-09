@@ -224,8 +224,7 @@ TEST_F(
     RestrictedTreeInodeEndToEnd,
     loadingRestrictedDirCreatesRestrictedTreeInode) {
   auto restrictedInode = getRestrictedInode();
-  // TODO: isRestricted not yet propagated through inode loading pipeline
-  EXPECT_FALSE(restrictedInode->isRestricted());
+  EXPECT_TRUE(restrictedInode->isRestricted());
 }
 
 TEST_F(RestrictedTreeInodeEndToEnd, restrictedDirStatReturnsZeroPermissions) {
@@ -236,24 +235,21 @@ TEST_F(RestrictedTreeInodeEndToEnd, restrictedDirStatReturnsZeroPermissions) {
 #ifndef _WIN32
   // Windows stat() doesn't set st_mode for directories (no metadata table).
   EXPECT_TRUE(S_ISDIR(st.st_mode));
-  // TODO: restricted inode should return zero permissions once loading pipeline
-  // propagates isRestricted
-  EXPECT_NE(st.st_mode & 07777, 0);
+  EXPECT_EQ(st.st_mode & 07777, 0);
 #endif
 }
 
 TEST_F(RestrictedTreeInodeEndToEnd, restrictedDirGetOrFindChildReturnsEACCES) {
   auto restrictedInode = getRestrictedInode();
-  // TODO: should throw EACCES once loading pipeline propagates isRestricted
   auto context = ObjectFetchContext::getNullContext();
-  EXPECT_NO_THROW(
-      restrictedInode->getOrFindChild("secret.txt"_pc, context, false).get());
+  expectEacces([&] {
+    restrictedInode->getOrFindChild("secret.txt"_pc, context, false).get();
+  });
 }
 
 TEST_F(RestrictedTreeInodeEndToEnd, restrictedDirLockContentsReadThrows) {
   auto restrictedInode = getRestrictedInode();
-  // TODO: should throw EACCES once loading pipeline propagates isRestricted
-  EXPECT_NO_THROW(restrictedInode->lockContentsRead());
+  expectEacces([&] { restrictedInode->lockContentsRead(); });
 }
 
 TEST(RestrictedTreeInode, parentListingIncludesRestrictedDir) {
@@ -273,10 +269,81 @@ TEST(RestrictedTreeInode, parentListingIncludesRestrictedDir) {
   EXPECT_TRUE(iter->second.isRestricted());
 }
 
-TEST(RestrictedTreeInode, nestedRestrictedDirPreWiring) {
-  // Before D99730301 wires TreeInode construction from DirEntry::isRestricted,
-  // the inode loads as unrestricted even though DirEntry has the flag set.
-  // This test documents the pre-wiring behavior (TDD).
+TEST(
+    RestrictedTreeInode,
+    fetchRestrictedTreeCachesRestrictionWhenParentMetadataMissing) {
+  TestMount testMount;
+  auto backingStore = testMount.getBackingStore();
+
+  // Create a restricted child tree that would normally be discovered via
+  // parent metadata before the child is loaded.
+  auto [secretBlob, secretBlobId] = backingStore->putBlob("secret content");
+  secretBlob->setReady();
+
+  auto* restrictedTree = backingStore->putRestrictedTree({
+      {"secret.txt", secretBlobId},
+  });
+  restrictedTree->setReady();
+  auto restrictedTreeId = restrictedTree->get().getObjectId();
+
+  // Building the parent from a StoredTree* drops the child's restricted bit
+  // from the parent TreeEntry. This simulates the fail-open case where parent
+  // metadata is missing even though a direct child fetch still returns a
+  // restricted Tree. Cache that live result on the DirEntry so future lookups
+  // can short-circuit before fetching again.
+  auto* rootTree = backingStore->putTree({
+      {"restricted", restrictedTree},
+  });
+  rootTree->setReady();
+  backingStore->putCommit(RootId{"1"}, rootTree)->setReady();
+  testMount.initialize(RootId{"1"});
+
+  auto rootInode = testMount.getRootInode();
+  {
+    // Prove the synthetic setup actually starts with missing parent metadata:
+    // the root DirEntry knows the child is a directory, but does not yet have
+    // the restricted bit set.
+    auto contents = rootInode->lockContentsRead();
+    auto it = contents->entries.find("restricted"_pc);
+    ASSERT_NE(it, contents->entries.end());
+    EXPECT_FALSE(it->second.isRestricted());
+  }
+
+  // Nothing has looked up the child yet, so the restricted child tree has not
+  // been fetched from the backing store.
+  EXPECT_EQ(backingStore->getAccessCount(restrictedTreeId), 0);
+
+  // The first lookup has to fetch the child tree. That fetch returns a
+  // restricted Tree, so the resulting inode is restricted and the parent
+  // DirEntry cache should be backfilled from the live fetch result.
+  auto restrictedInode = testMount.getTreeInode("restricted"_relpath);
+  ASSERT_TRUE(restrictedInode->isRestricted());
+  EXPECT_EQ(backingStore->getAccessCount(restrictedTreeId), 1);
+
+  {
+    // Verify that the first lookup updated the parent-side cache, not just the
+    // loaded child inode.
+    auto contents = rootInode->lockContentsRead();
+    auto it = contents->entries.find("restricted"_pc);
+    ASSERT_NE(it, contents->entries.end());
+    EXPECT_TRUE(it->second.isRestricted());
+  }
+
+  // Drop the loaded child and unload the parent's children so the next lookup
+  // has to consult the parent DirEntry metadata again rather than reusing the
+  // already-loaded restricted inode.
+  restrictedInode.reset();
+  rootInode->unloadChildrenNow();
+
+  // The second lookup should now short-circuit from the cached restricted bit
+  // on the parent DirEntry, so it still returns a restricted inode without
+  // fetching the child tree a second time.
+  auto reloadedInode = testMount.getTreeInode("restricted"_relpath);
+  EXPECT_TRUE(reloadedInode->isRestricted());
+  EXPECT_EQ(backingStore->getAccessCount(restrictedTreeId), 1);
+}
+
+TEST(RestrictedTreeInode, nestedRestrictedDirBlocksAccess) {
   FakeTreeBuilder builder;
   builder.setFile("parent/normal.txt", "normal content");
   builder.setFile("parent/restricted_child/secret.txt", "secret content");
@@ -285,17 +352,15 @@ TEST(RestrictedTreeInode, nestedRestrictedDirPreWiring) {
 
   auto restrictedInode =
       testMount.getTreeInode("parent/restricted_child"_relpath);
-  // DirEntry has isRestricted but TreeInode doesn't read it yet
-  EXPECT_FALSE(restrictedInode->isRestricted());
+  EXPECT_TRUE(restrictedInode->isRestricted());
 
-  // Access succeeds since the inode is not restricted
   auto context = ObjectFetchContext::getNullContext();
-  EXPECT_NO_THROW(
-      restrictedInode->getOrFindChild("secret.txt"_pc, context, false).get());
+  expectEacces([&] {
+    restrictedInode->getOrFindChild("secret.txt"_pc, context, false).get();
+  });
 }
 
-TEST_F(RestrictedTreeInodeEndToEnd, getObjectIdReturnsNullopt) {
+TEST_F(RestrictedTreeInodeEndToEnd, getObjectIdReturnsTrueId) {
   auto restrictedInode = getRestrictedInode();
-  // TODO: should return nullopt once loading pipeline propagates isRestricted
-  EXPECT_NE(restrictedInode->getObjectId(), std::nullopt);
+  EXPECT_TRUE(restrictedInode->getObjectId().has_value());
 }

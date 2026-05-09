@@ -149,6 +149,19 @@ class TreeInode::IncompleteInodeLoad {
   Future<unique_ptr<InodeBase>> future_;
 };
 
+void maybeBackfillRestrictedDirEntry(
+    DirEntry& entry,
+    const InodeBase& childInode) {
+  auto* childTree = dynamic_cast<const TreeInode*>(&childInode);
+  if (!childTree || !childTree->isRestricted()) {
+    return;
+  }
+
+  // Normal parent metadata propagation happens on the tree-load path. This
+  // only backfills stale or missing parent metadata after a child load.
+  entry.setRestricted(true);
+}
+
 TreeInode::TreeInode(
     InodeNumber ino,
     TreeInodePtr parent,
@@ -462,6 +475,7 @@ TreeInode::loadChild(
       // InodeMap::inodeLoadComplete() now, since we still have the
       // data_ lock.
       auto childInode = std::move(loadFuture).get();
+      maybeBackfillRestrictedDirEntry(entry, *childInode);
       entry.setInode(childInode.get());
       promises = getInodeMap()->inodeLoadComplete(childInode.get());
       childInodePtr = InodePtr::takeOwnership(std::move(childInode));
@@ -993,6 +1007,21 @@ void TreeInode::inodeLoadComplete(
           childName,
           "inode removed before loading finished");
     }
+    // This load completed after releasing the parent lock. Only cache the
+    // restricted bit if the current slot still names the same unloaded SCM
+    // child we fetched. These checks only make the cache update conservative;
+    // inodeLoadComplete() still relies on the stronger invariant that this
+    // name still maps to the inode load it is completing.
+    if (iter->second.isDirectory() && !iter->second.isMaterialized() &&
+        iter->second.getInodeNumber() == childInode->getNodeId()) {
+      if (auto* childTree = dynamic_cast<TreeInode*>(childInode.get())) {
+        auto childTreeId = childTree->getObjectId();
+        if (childTreeId &&
+            iter->second.getObjectId().bytesEqual(*childTreeId)) {
+          maybeBackfillRestrictedDirEntry(iter->second, *childInode);
+        }
+      }
+    }
     iter->second.setInode(childInode.get());
     // Make sure that we are still holding the contents_ lock when
     // calling inodeLoadComplete().  This ensures that no-one can look up
@@ -1117,6 +1146,23 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
   };
 
   if (!entry.isMaterialized()) {
+    // If the entry was previously marked as restricted (server denied access
+    // via ACL), short-circuit and return a restricted TreeInode without
+    // attempting a tree fetch.
+    if (entry.isRestricted()) {
+      auto caseSensitivity =
+          getMount()->getCheckoutConfig()->getCaseSensitive();
+      return std::make_unique<TreeInode>(
+          entry.getInodeNumber(),
+          inodePtrFromThis(),
+          name,
+          entry.getInitialMode(),
+          std::nullopt,
+          DirContents{caseSensitivity},
+          entry.getObjectId(),
+          /*isRestricted=*/true);
+    }
+
     auto getTreeSpan = fetchContext->createSpan("getTree");
 
     auto getTreeFunc = [self = inodePtrFromThis(),
@@ -1138,6 +1184,22 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                 -> ImmediateFuture<unique_ptr<InodeBase>> {
               // Tree has been loaded, end the getTree span
               getTreeSpan.reset();
+
+              if (tree->isRestricted()) {
+                auto caseSensitivity =
+                    self->getMount()->getCheckoutConfig()->getCaseSensitive();
+                auto restricted = std::make_unique<TreeInode>(
+                    number,
+                    std::move(self),
+                    childName,
+                    entryMode,
+                    std::nullopt,
+                    DirContents{caseSensitivity},
+                    tree->getObjectId(),
+                    /*isRestricted=*/true);
+                return ImmediateFuture<unique_ptr<InodeBase>>{
+                    std::move(restricted)};
+              }
 
               auto loadOverlayDirSpan =
                   fetchContext->createSpan("loadOverlayDir");

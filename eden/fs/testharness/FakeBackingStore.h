@@ -111,6 +111,12 @@ class FakeBackingStore final : public BackingStore {
   StoredTree* putTree(Tree::container entries);
   StoredTree* putTree(ObjectId id, Tree::container entries);
 
+  StoredTree* putRestrictedTree(
+      const std::initializer_list<TreeEntryData>& entries);
+  StoredTree* putRestrictedTree(
+      ObjectId id,
+      const std::initializer_list<TreeEntryData>& entries);
+
   /**
    * Add a tree to the backing store, or return the StoredTree already present
    * with this id.
@@ -228,10 +234,14 @@ class FakeBackingStore final : public BackingStore {
   static Tree::container buildTreeEntries(
       const std::initializer_list<TreeEntryData>& entryArgs);
   static ObjectId computeTreeId(const Tree::container& sortedEntries);
-  StoredTree* putTreeImpl(ObjectId id, Tree::container&& sortedEntries);
+  StoredTree* putTreeImpl(
+      ObjectId id,
+      Tree::container&& sortedEntries,
+      bool isRestricted = false);
   std::pair<StoredTree*, bool> maybePutTreeImpl(
       ObjectId id,
-      Tree::container&& sortedEntries);
+      Tree::container&& sortedEntries,
+      bool isRestricted = false);
 
   FRIEND_TEST(FakeBackingStoreTest, getNonExistent);
   FRIEND_TEST(FakeBackingStoreTest, getBlob);

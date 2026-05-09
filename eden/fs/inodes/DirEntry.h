@@ -203,10 +203,8 @@ class DirEntry {
   }
 
   /**
-   * Updates the parent's cached prediction after a child Tree fetch reveals
-   * server-side ACL denial. Diverges from TreeEntry::isRestricted because that
-   * is a static annotation set when the parent tree is built, while this
-   * reflects the live fetch outcome (Tree::isRestricted) discovered later.
+   * Cache a restriction discovered after the parent TreeEntry was built.
+   * Used when parent metadata is stale or missing.
    */
   void setRestricted(bool isRestricted) {
     isRestricted_ = isRestricted ? 1u : 0u;
