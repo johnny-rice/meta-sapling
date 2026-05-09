@@ -58,3 +58,12 @@ Count the number of RootTree that are obtained from BackingStore.
 1. `Counter getRootTreeFailed{"object_store.get_root_tree_failed"}` :
 
 Count the number of RootTree cannot be fetched.
+
+1. `Counter checkPermission{"object_store.check_permission"}` :
+
+Count permission recheck attempts for restricted trees.
+
+1. `Counter checkPermissionFromBackingStore{"object_store.check_permission.backing_store"}` :
+
+Count permission recheck attempts that pass the TTL gate and delegate to the
+BackingStore.

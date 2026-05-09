@@ -516,6 +516,10 @@ struct ObjectStoreStats : StatsGroup<ObjectStoreStats> {
       "object_store.get_blob_metadata.backing_store"};
   Counter getBlobAuxDataFromBlob{"object_store.get_blob_metadata.blob"};
   Counter getBlobAuxDataFailed{"object_store.get_blob_metadata_failed"};
+
+  Counter checkPermission{"object_store.check_permission"};
+  Counter checkPermissionFromBackingStore{
+      "object_store.check_permission.backing_store"};
 };
 
 /**

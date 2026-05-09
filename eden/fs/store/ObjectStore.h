@@ -10,6 +10,7 @@
 #include <folly/Synchronized.h>
 #include <folly/coro/safe/NowTask.h>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <unordered_map>
 
@@ -372,6 +373,16 @@ class ObjectStore : public IObjectStore,
       const std::vector<std::string>& globs,
       const std::vector<std::string>& prefixes,
       const ObjectFetchContextPtr& context) const;
+
+  /**
+   * Check whether the caller has access to the given manifest ID,
+   * but only if the TTL since lastCheck has expired. Returns true
+   * if access is allowed, false if denied or TTL not yet expired.
+   * The TTL is controlled by the acl:restricted-tree-ttl-seconds config.
+   */
+  ImmediateFuture<bool> checkPermissionIfExpired(
+      const ObjectId& manifestId,
+      std::chrono::steady_clock::time_point lastCheck) const;
 
   /**
    * Get the BackingStore used by this ObjectStore

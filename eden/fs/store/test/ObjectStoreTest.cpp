@@ -8,6 +8,7 @@
 #include <folly/test/TestUtils.h>
 #include <gtest/gtest.h>
 
+#include <fb303/ServiceData.h>
 #include <folly/coro/GtestHelpers.h>
 
 #include "eden/common/telemetry/NullStructuredLogger.h"
@@ -564,5 +565,115 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         CaseSensitivity::Sensitive,
         CaseSensitivity::Insensitive));
+
+namespace {
+
+// Separate fixture so we can control the TTL config value per test.
+struct ObjectStoreCheckPermissionTest : public ::testing::Test {
+  void SetUp() override {
+    rawEdenConfig = EdenConfig::createTestEdenConfig();
+    auto edenConfig = std::make_shared<ReloadableConfig>(rawEdenConfig);
+    stats = makeRefPtr<EdenStats>();
+    treeCache = TreeCache::create(edenConfig, stats.copy());
+    fakeBackingStore = std::make_shared<FakeBackingStore>();
+    objectStore = ObjectStore::create(
+        fakeBackingStore,
+        treeCache,
+        stats.copy(),
+        std::make_shared<ProcessInfoCache>(),
+        std::make_shared<NullStructuredLogger>(),
+        edenConfig,
+        CaseSensitivity::Sensitive);
+  }
+
+  void setTtlSeconds(uint64_t seconds) {
+    rawEdenConfig->restrictedTreeTtlSeconds.setValue(
+        seconds, ConfigSourceType::UserConfig, true);
+  }
+
+  int64_t getCounter(folly::StringPiece key) {
+    stats->flush();
+    return facebook::fb303::ServiceData::get()
+        ->getCounterIfExists(key)
+        .value_or(0);
+  }
+
+  std::shared_ptr<EdenConfig> rawEdenConfig;
+  std::shared_ptr<FakeBackingStore> fakeBackingStore;
+  std::shared_ptr<TreeCache> treeCache;
+  EdenStatsPtr stats;
+  std::shared_ptr<ObjectStore> objectStore;
+};
+
+constexpr folly::StringPiece kCheckPermissionCounter =
+    "object_store.check_permission.sum.60";
+constexpr folly::StringPiece kCheckPermissionBackingStoreCounter =
+    "object_store.check_permission.backing_store.sum.60";
+
+} // namespace
+
+TEST_F(
+    ObjectStoreCheckPermissionTest,
+    ttl_not_expired_short_circuits_to_false) {
+  // 5 minute TTL, lastCheck is "now" — TTL not expired.
+  setTtlSeconds(300);
+  ObjectId id{"manifest_id_1"};
+  // Configure backing store to return true; if we delegated, we'd see true.
+  fakeBackingStore->setCheckPermissionResult(id, true);
+  auto initialChecks = getCounter(kCheckPermissionCounter);
+  auto initialBackingStoreChecks =
+      getCounter(kCheckPermissionBackingStoreCounter);
+
+  auto now = std::chrono::steady_clock::now();
+  auto result = objectStore->checkPermissionIfExpired(id, now).get(0ms);
+
+  // TTL has not expired so result is false (still restricted) and the
+  // backing store was not consulted.
+  EXPECT_FALSE(result);
+  EXPECT_EQ(0, fakeBackingStore->getCheckPermissionCount(id));
+  EXPECT_EQ(1, getCounter(kCheckPermissionCounter) - initialChecks);
+  EXPECT_EQ(
+      0,
+      getCounter(kCheckPermissionBackingStoreCounter) -
+          initialBackingStoreChecks);
+}
+
+TEST_F(
+    ObjectStoreCheckPermissionTest,
+    ttl_expired_delegates_to_backing_store_true) {
+  // Zero TTL means every call goes through to the backing store.
+  setTtlSeconds(0);
+  ObjectId id{"manifest_id_2"};
+  fakeBackingStore->setCheckPermissionResult(id, true);
+  auto initialChecks = getCounter(kCheckPermissionCounter);
+  auto initialBackingStoreChecks =
+      getCounter(kCheckPermissionBackingStoreCounter);
+
+  auto now = std::chrono::steady_clock::now();
+  auto result = objectStore->checkPermissionIfExpired(id, now).get(0ms);
+
+  EXPECT_TRUE(result);
+  EXPECT_EQ(1, fakeBackingStore->getCheckPermissionCount(id));
+  EXPECT_EQ(1, getCounter(kCheckPermissionCounter) - initialChecks);
+  EXPECT_EQ(
+      1,
+      getCounter(kCheckPermissionBackingStoreCounter) -
+          initialBackingStoreChecks);
+}
+
+TEST_F(
+    ObjectStoreCheckPermissionTest,
+    ttl_expired_delegates_to_backing_store_false) {
+  // TTL of 1 second with lastCheck far in the past — TTL expired.
+  setTtlSeconds(1);
+  ObjectId id{"manifest_id_3"};
+  fakeBackingStore->setCheckPermissionResult(id, false);
+
+  auto longAgo = std::chrono::steady_clock::now() - std::chrono::hours(1);
+  auto result = objectStore->checkPermissionIfExpired(id, longAgo).get(0ms);
+
+  EXPECT_FALSE(result);
+  EXPECT_EQ(1, fakeBackingStore->getCheckPermissionCount(id));
+}
 
 } // namespace facebook::eden

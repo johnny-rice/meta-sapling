@@ -981,4 +981,17 @@ bool ObjectStore::areObjectsKnownIdentical(
       ObjectComparison::Identical;
 }
 
+ImmediateFuture<bool> ObjectStore::checkPermissionIfExpired(
+    const ObjectId& manifestId,
+    std::chrono::steady_clock::time_point lastCheck) const {
+  stats_->increment(&ObjectStoreStats::checkPermission);
+  auto ttl = std::chrono::seconds{
+      getEdenConfig()->restrictedTreeTtlSeconds.getValue()};
+  if (std::chrono::steady_clock::now() - lastCheck < ttl) {
+    return false; // TTL not expired, still restricted
+  }
+  stats_->increment(&ObjectStoreStats::checkPermissionFromBackingStore);
+  return backingStore_->checkPermission(manifestId);
+}
+
 } // namespace facebook::eden

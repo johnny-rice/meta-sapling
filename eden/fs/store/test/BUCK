@@ -76,6 +76,7 @@ cpp_unittest(
         "//eden/fs/testharness:stored_object",
         "//eden/fs/testharness:test_util",
         "//eden/fs/utils:static_assert",
+        "//fb303:service_data",
         "//folly/coro:gtest_helpers",
         "//folly/executors:manual_executor",
         "//folly/logging:logging",
