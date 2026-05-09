@@ -4920,7 +4920,7 @@ size_t unloadChildrenIf(
   // Unload children whose reference count is zero.
   std::vector<unique_ptr<InodeBase>> toDelete;
   {
-    auto contents = self->getContents().wlock();
+    auto contents = self->getContentsUnchecked().wlock();
     auto inodeMapLock = inodeMap->lockForUnload();
 
     for (auto& entry : contents->entries) {
@@ -4967,7 +4967,7 @@ size_t unloadChildrenIf(
 std::vector<TreeInodePtr> getTreeChildren(TreeInode* self) {
   std::vector<TreeInodePtr> treeChildren;
   {
-    auto contents = self->getContents().rlock();
+    auto contents = self->getContentsUnchecked().rlock();
     for (auto& entry : contents->entries) {
       if (!entry.second.getInode()) {
         continue;
@@ -5018,7 +5018,7 @@ ImmediateFuture<std::vector<TreeInodePtr>> getLoadedOrRememberedTreeChildren(
   std::vector<ImmediateFuture<TreeInodePtr>> res;
   std::vector<PathComponent> toLoad;
   {
-    auto contents = self->getContents().rlock();
+    auto contents = self->getContentsUnchecked().rlock();
     for (auto& entry : contents->entries) {
       if (!entry.second.isDirectory()) {
         continue;

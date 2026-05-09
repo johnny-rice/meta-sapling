@@ -1226,7 +1226,7 @@ optional<InodeMap::UnloadedInode> InodeMap::updateOverlayForUnload(
           asTree->getLogPath());
       overlay->saveOverlayDir(
           asTree->getNodeId(),
-          asTree->getContents().unsafeGetUnlocked().entries,
+          asTree->getContentsUnchecked().unsafeGetUnlocked().entries,
           /*isMaterialized=*/false);
     }
   }
@@ -1261,7 +1261,7 @@ optional<InodeMap::UnloadedInode> InodeMap::updateOverlayForUnload(
     // is being unloaded, nobody else can reference it right now, so the lock is
     // guaranteed not held. Therefore, it's not necessary to synchronize, and
     // the contents can be directly accessed here.
-    auto& treeContents = asTree->getContents().unsafeGetUnlocked();
+    auto& treeContents = asTree->getContentsUnchecked().unsafeGetUnlocked();
 
     // If the fs refcount is non-zero we have to remember this inode.
     if (fsCount > 0) {

@@ -895,7 +895,7 @@ TEST(TreeInode, buildDirFromTree) {
 
   // Load the directory inode — this exercises buildDirFromTree internally
   auto dir = mount.getTreeInode("dir"_relpath);
-  auto contents = dir->getContents().rlock();
+  auto contents = dir->getContentsUnchecked().rlock();
 
   // Verify all entries are present
   EXPECT_EQ(3, contents->entries.size());
@@ -928,7 +928,7 @@ TEST(TreeInode, buildDirFromTreePropagatesIsRestricted) {
   TestMount testMount{builder};
 
   auto rootInode = testMount.getEdenMount()->getRootInode();
-  auto contents = rootInode->getContents().rlock();
+  auto contents = rootInode->getContentsUnchecked().rlock();
 
   auto restrictedIter = contents->entries.find("restricted_dir"_pc);
   ASSERT_NE(restrictedIter, contents->entries.end());
@@ -962,7 +962,6 @@ TEST(DirEntry, isRestrictedBitField) {
   mutableEntry.setRestricted(false);
   EXPECT_FALSE(mutableEntry.isRestricted());
 }
-
 TEST(TreeInode, childMaterializedSkipsOverlayWrite) {
   FakeTreeBuilder builder;
   builder.setFiles({
@@ -993,7 +992,7 @@ TEST(TreeInode, childMaterializedSkipsOverlayWrite) {
 
   // In-memory: b.txt is now materialized
   {
-    auto contents = dir->getContents().rlock();
+    auto contents = dir->getContentsUnchecked().rlock();
     EXPECT_TRUE(contents->entries.at("b.txt"_pc).isMaterialized());
   }
 
@@ -1026,7 +1025,7 @@ TEST(TreeInode, childMaterializedWritesOverlayByDefault) {
 
   // Both in-memory and overlay should show b.txt as materialized
   {
-    auto contents = dir->getContents().rlock();
+    auto contents = dir->getContentsUnchecked().rlock();
     EXPECT_TRUE(contents->entries.at("b.txt"_pc).isMaterialized());
   }
   {
@@ -1067,7 +1066,7 @@ TEST(TreeInode, childDematerializedSkipsOverlayWrite) {
 
   // In-memory: b.txt should now be dematerialized
   {
-    auto contents = dir->getContents().rlock();
+    auto contents = dir->getContentsUnchecked().rlock();
     EXPECT_FALSE(contents->entries.at("b.txt"_pc).isMaterialized());
   }
 

@@ -82,7 +82,7 @@ void traverseObservedInodes(
   std::vector<ChildEntry> children;
   std::optional<ObjectId> id;
   {
-    auto contents = root.getContents().rlock();
+    auto contents = root.getContentsUnchecked().rlock();
     children = parseDirContents(contents->entries);
     id = contents->treeId;
   }

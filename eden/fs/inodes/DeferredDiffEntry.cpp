@@ -125,7 +125,7 @@ class ModifiedDiffEntry : public DeferredDiffEntry {
     }
 
     {
-      auto contents = treeInode->getContents().wlock();
+      auto contents = treeInode->getContentsUnchecked().wlock();
       if (!contents->isMaterialized()) {
         for (auto& scmEntry : scmEntries_) {
           if (context_->store->areObjectsKnownIdentical(

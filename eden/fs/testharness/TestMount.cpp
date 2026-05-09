@@ -786,7 +786,7 @@ ImmediateFuture<Unit> TestMount::loadAllInodesFuture(
   // about efficiency for test code, and this is much simpler.)
   std::vector<PathComponent> childNames;
   {
-    auto contents = treeInode->getContents().rlock();
+    auto contents = treeInode->getContentsUnchecked().rlock();
     childNames.reserve(contents->entries.size());
     for (const auto& entry : contents->entries) {
       childNames.emplace_back(entry.first);

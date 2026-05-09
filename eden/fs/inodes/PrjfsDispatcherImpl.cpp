@@ -959,7 +959,7 @@ ImmediateFuture<folly::Unit> recursivelyUpdateChildrens(
   // with the ones in the inode.
   PathMap<folly::Unit> map{CaseSensitivity::Insensitive};
   {
-    auto content = tree->getContents().rlock();
+    auto content = tree->getContentsUnchecked().rlock();
     map.reserve(direntNames.size() + content->entries.size());
     for (const auto& entry : content->entries) {
       map.emplace(entry.first, folly::unit);

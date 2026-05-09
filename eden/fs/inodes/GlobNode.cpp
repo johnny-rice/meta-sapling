@@ -40,7 +40,7 @@ struct TreeInodePtrRoot {
 
   /** Return an object that holds a lock over the children */
   folly::Synchronized<TreeInodeState>::RLockedPtr lockContents() {
-    return root->getContents().rlock();
+    return root->getContentsUnchecked().rlock();
   }
 
   /** Given the return value from lockContents and a name,

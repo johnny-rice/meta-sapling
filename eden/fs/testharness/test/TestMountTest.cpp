@@ -49,7 +49,7 @@ TEST(TestMount, createSimpleTestMount) {
 
   auto dirTreeEntry = testMount.getTreeInode("");
   {
-    auto dir = dirTreeEntry->getContents().rlock();
+    auto dir = dirTreeEntry->getContentsUnchecked().rlock();
     auto& rootEntries = dir->entries;
     auto& path1Entry = rootEntries.at("path1"_pc);
     ASSERT_FALSE(path1Entry.isMaterialized());
@@ -71,7 +71,7 @@ TEST(TestMount, addFileAfterMountIsCreated) {
   testMount.addFile("file2.txt", "I am added by the user after mounting.");
   auto dirTreeEntry = testMount.getTreeInode("");
   {
-    auto dir = dirTreeEntry->getContents().rlock();
+    auto dir = dirTreeEntry->getContentsUnchecked().rlock();
     auto& rootEntries = dir->entries;
     EXPECT_EQ(3, rootEntries.size()) << "New entry is visible in MountPoint";
   }

@@ -258,17 +258,6 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   }
 
   /**
-   * Temporary compatibility accessor for callers that have not yet been
-   * migrated to guarded or explicitly unchecked access.
-   */
-  const folly::Synchronized<TreeInodeState>& getContents() const {
-    return contents_;
-  }
-  folly::Synchronized<TreeInodeState>& getContents() {
-    return contents_;
-  }
-
-  /**
    * Direct access to contents without ACL checks. Only for internal
    * operations that must bypass restrictions (inode unload, checkout).
    * Prefer lockContentsRead() / lockContentsWrite() for normal access.
@@ -337,10 +326,10 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       const ObjectFetchContextPtr& context);
 
   /**
-   * Internal method intended for removeRecursively to use. This method does not
-   * flush invalidation so the caller won't see the up-to-date content after
-   * return. Call EdenMount::flushInvalidations to ensure any changes to the
-   * inode will be visible after it returns.
+   * Internal method intended for removeRecursively to use. This method does
+   * not flush invalidation so the caller won't see the up-to-date content
+   * after return. Call EdenMount::flushInvalidations to ensure any changes to
+   * the inode will be visible after it returns.
    */
   ImmediateFuture<folly::Unit> removeRecursivelyNoFlushInvalidation(
       PathComponentPiece name,
@@ -525,11 +514,11 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   size_t unloadChildrenNow();
 
   /**
-   * Unload all children, recursively, neither referenced internally by Eden nor
-   * by FUSE or ProjectedFS.
+   * Unload all children, recursively, neither referenced internally by Eden
+   * nor by FUSE or ProjectedFS.
    *
-   * If mustPersistInodeNumbers is false, we will skip lazy inode persistence to
-   * overlay. This makes sense for "checkout" where all bets are off and we
+   * If mustPersistInodeNumbers is false, we will skip lazy inode persistence
+   * to overlay. This makes sense for "checkout" where all bets are off and we
    * don't want user to wait for overlay writes.
    *
    * Returns the number of inodes unloaded.
@@ -1005,7 +994,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
 
   /**
    * Sets wasDirectoryListModified true if this checkout entry operation has
-   * modified the directory contents, which implies the return value is nullptr.
+   * modified the directory contents, which implies the return value is
+   * nullptr.
    *
    * This function could return a std::variant of InvalidationRequired and
    * std::shared_ptr<CheckoutAction> instead of setting a boolean.
@@ -1094,14 +1084,14 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    * the inode with out performing any write operations. `loadInodes` indicates
    * that you would like to load the inodes if they are not yet loaded. If the
    * inode is not loaded and `loadInodes` is set, a nullopt value will be
-   * returned and you can call wlockGetOrFindChild to load and return the inode.
+   * returned and you can call wlockGetOrFindChild to load and return the
+   * inode.
    *
    * If the inode is already loaded this will return the inode.
-   * Otherwise, if loadInodes is set or the inode is materialized we will return
-   * nullopt because the inode must be loaded to inspect it and loading an inode
-   * is a write operation.
-   * If we fall into none of the above cases the TreeOrEntry representing the
-   * data for that inode will be returned.
+   * Otherwise, if loadInodes is set or the inode is materialized we will
+   * return nullopt because the inode must be loaded to inspect it and loading
+   * an inode is a write operation. If we fall into none of the above cases the
+   * TreeOrEntry representing the data for that inode will be returned.
    */
   std::optional<ImmediateFuture<VirtualInode>> rlockGetOrFindChild(
       const TreeInodeState& contents,
@@ -1131,10 +1121,10 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   // We need to do some cleanup outside of the lock. So we return some promises
   // and futures and things to fulfil after the lock is released.
   struct LoadChildCleanUp {
-    // If we are responsible for loading the inode, but the load is not complete
-    // yet, then we need to register the inode load, so that someone will take
-    // care of the cleanup after loading the inode. This future will be valid if
-    // we are the ones responsible for the inode load.
+    // If we are responsible for loading the inode, but the load is not
+    // complete yet, then we need to register the inode load, so that someone
+    // will take care of the cleanup after loading the inode. This future will
+    // be valid if we are the ones responsible for the inode load.
     folly::Future<std::unique_ptr<InodeBase>> inodeLoadFuture;
 
     // If we are the ones responsible for the inode load and the load is
@@ -1151,9 +1141,9 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
 
   /**
    * Loads and returns the inode for this child. Note this does not perform
-   * inode load cleanup. loadChildCleanup must be called after the lock has been
-   * released, any code between calling this and loadChildCleanUp should be no
-   * throw or call loadChildCleanUp despite exceptions.
+   * inode load cleanup. loadChildCleanup must be called after the lock has
+   * been released, any code between calling this and loadChildCleanUp should
+   * be no throw or call loadChildCleanUp despite exceptions.
    */
   std::pair<folly::SemiFuture<InodePtr>, LoadChildCleanUp> loadChild(
       folly::Synchronized<TreeInodeState>::LockedPtr& contents,
