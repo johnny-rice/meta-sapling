@@ -288,6 +288,7 @@ class HgRepository(repobase.Repository):
 
         # Eagerepo allows us to fake remote fetches from the server
         eagerepo = self.temp_mgr.make_temp_dir(prefix="eagerepo")
+        self.eagerepo = eagerepo
 
         hgrc.setdefault("remotefilelog", {})
         hgrc["remotefilelog"]["server"] = "false"
