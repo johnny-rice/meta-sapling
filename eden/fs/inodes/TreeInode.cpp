@@ -175,7 +175,8 @@ TreeInode::TreeInode(
     bool isRestricted)
     : Base(ino, initialMode, initialTimestamps, parent, name),
       contents_(std::in_place, std::move(dir), std::move(treeId)),
-      isRestricted_(isRestricted) {
+      isRestricted_(isRestricted),
+      lastPermissionCheck_(std::chrono::steady_clock::now()) {
   XDCHECK_NE(ino, kRootNodeId);
 }
 
@@ -246,11 +247,114 @@ void TreeInode::throwRestrictedAccess() const {
           getNodeId()));
 }
 
+ImmediateFuture<folly::Unit> TreeInode::recheckPermissionIfExpired(
+    const ObjectFetchContextPtr& fetchContext) {
+  if (!isRestricted_.load(std::memory_order_relaxed)) {
+    return folly::unit;
+  }
+
+  auto treeId = getContentsUnchecked().rlock()->treeId;
+  if (!treeId) {
+    return folly::unit;
+  }
+
+  auto ttl = std::chrono::seconds{
+      getObjectStore().getEdenConfig()->restrictedTreeTtlSeconds.getValue()};
+  auto lastCheck = lastPermissionCheck_.load(std::memory_order_relaxed);
+  while (true) {
+    auto now = std::chrono::steady_clock::now();
+    if (now - lastCheck < ttl) {
+      return folly::unit;
+    }
+    if (lastPermissionCheck_.compare_exchange_weak(
+            lastCheck, now, std::memory_order_relaxed)) {
+      break;
+    }
+    if (!isRestricted_.load(std::memory_order_relaxed)) {
+      return folly::unit;
+    }
+  }
+
+  auto expiredCheck =
+      std::chrono::steady_clock::now() - ttl - std::chrono::nanoseconds{1};
+  return getObjectStore()
+      .checkPermissionIfExpired(*treeId, expiredCheck)
+      .thenTry(
+          [self = inodePtrFromThis(), fetchContext = fetchContext.copy()](
+              folly::Try<bool> result) mutable -> ImmediateFuture<folly::Unit> {
+            if (result.hasException()) {
+              XLOGF(
+                  WARN,
+                  "check_permission failed for restricted inode {} ({}): {}",
+                  self->getNodeId(),
+                  self->getLogPath(),
+                  folly::exceptionStr(result.exception()));
+              return folly::unit;
+            }
+            if (!result.value()) {
+              return folly::unit;
+            }
+            return self->transitionToUnrestricted(fetchContext);
+          });
+}
+
+ImmediateFuture<folly::Unit> TreeInode::transitionToUnrestricted(
+    const ObjectFetchContextPtr& fetchContext) {
+  auto treeId = getContentsUnchecked().rlock()->treeId;
+  if (!treeId) {
+    return folly::unit;
+  }
+
+  return getObjectStore()
+      .getTree(*treeId, fetchContext)
+      .thenValue([self = inodePtrFromThis(),
+                  savedTreeId = *treeId](std::shared_ptr<const Tree> tree) {
+        auto newContents =
+            self->buildUnrestrictedDirContents(self->getNodeId(), *tree);
+
+        auto renameLock = self->getMount()->acquireRenameLock();
+
+        {
+          auto contents = self->getContentsUnchecked().wlock();
+          if (!self->isRestricted_.load(std::memory_order_relaxed)) {
+            return; // already transitioned by concurrent recheck
+          }
+          if (contents->treeId != savedTreeId) {
+            return; // treeId changed (checkout raced), stale fetch
+          }
+          contents->entries = std::move(newContents);
+          contents->treeId = tree->getObjectId();
+        }
+
+        self->isRestricted_.store(false, std::memory_order_relaxed);
+
+        auto loc = self->getLocationInfo(renameLock);
+        if (loc.parent && !loc.unlinked) {
+          auto parentContents = loc.parent->getContentsUnchecked().wlock();
+          auto it = parentContents->entries.find(loc.name);
+          if (it != parentContents->entries.end()) {
+            it->second.setRestricted(false);
+          }
+        }
+
+        {
+          auto contents = self->getContentsUnchecked().wlock();
+          self->invalidateChannelDirCache(*contents).get();
+        }
+      });
+}
+
 ImmediateFuture<struct stat> TreeInode::stat(
     const ObjectFetchContextPtr& context) {
   logAccess(*context);
   notifyParentOfStat(/*isFile=*/false, *context);
 
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    return recheckPermissionIfExpired(context).thenValue(
+        [self = inodePtrFromThis()](folly::Unit) {
+          return self->statWithCurrentRestrictionState();
+        });
+  }
   return statWithCurrentRestrictionState();
 }
 
@@ -390,23 +494,35 @@ ImmediateFuture<VirtualInode> TreeInode::getOrFindChild(
         .thenValue([](auto&& inode) { return VirtualInode{std::move(inode)}; });
   }
 #endif // !_WIN32
-  return tryRlockCheckBeforeUpdate<ImmediateFuture<VirtualInode>>(
-             contents_,
-             [&](const auto& contents)
-                 -> std::optional<ImmediateFuture<VirtualInode>> {
-               return rlockGetOrFindChild(contents, name, context, loadInodes);
-             },
-             [&](auto& contents) -> ImmediateFuture<VirtualInode> {
-               auto result = loadChild(contents, name, context);
-               // it's important the code between loadChild and loadChildCleanUp
-               // is no throw. We need to perform the loadChildCleanUp now
-               // regardless of exception.
-               contents.unlock();
-               loadChildCleanUp(name, std::move(result.second));
-               return ImmediateFuture<InodePtr>{std::move(result.first)}
-                   .thenValue([](auto&& inode) { return VirtualInode{inode}; });
-             })
-      .ensure([b = std::move(block)]() mutable { b.close(); });
+  auto doGetOrFindChild = [self = inodePtrFromThis(),
+                           name = PathComponent{name},
+                           context = context.copy(),
+                           loadInodes,
+                           block = std::move(block)](folly::Unit) mutable {
+    return tryRlockCheckBeforeUpdate<ImmediateFuture<VirtualInode>>(
+               self->contents_,
+               [&](const auto& contents)
+                   -> std::optional<ImmediateFuture<VirtualInode>> {
+                 return self->rlockGetOrFindChild(
+                     contents, name, context, loadInodes);
+               },
+               [&](auto& contents) -> ImmediateFuture<VirtualInode> {
+                 auto result = self->loadChild(contents, name, context);
+                 contents.unlock();
+                 self->loadChildCleanUp(name, std::move(result.second));
+                 return ImmediateFuture<InodePtr>{std::move(result.first)}
+                     .thenValue([](auto&& inode) {
+                       return VirtualInode{std::move(inode)};
+                     });
+               })
+        .ensure([b = std::move(block)]() mutable { b.close(); });
+  };
+
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    return recheckPermissionIfExpired(context).thenValue(
+        std::move(doGetOrFindChild));
+  }
+  return doGetOrFindChild(folly::unit);
 }
 
 std::optional<VirtualInode> TreeInode::rlockCheckChild(
@@ -504,6 +620,8 @@ folly::coro::now_task<VirtualInode> TreeInode::co_getOrFindChild(
 
 std::vector<std::pair<PathComponent, ImmediateFuture<VirtualInode>>>
 TreeInode::getChildren(const ObjectFetchContextPtr& context, bool loadInodes) {
+  recheckPermissionIfExpired(context).get();
+
   // We could optimize this to take the rlock first and try to get all the
   // VirtualInode with out loading inodes. This would allow for higher
   // concurrency. However, this will significantly increase code
@@ -544,7 +662,7 @@ TreeInode::getChildren(const ObjectFetchContextPtr& context, bool loadInodes) {
         result.emplace_back(
             entry.first,
             ImmediateFuture<InodePtr>{std::move(childResult.first)}.thenValue(
-                [](auto&& inode) { return VirtualInode{inode}; }));
+                [](auto&& inode) { return VirtualInode{std::move(inode)}; }));
       }
     }
   }
@@ -2628,6 +2746,9 @@ bool TreeInode::readdirImpl(
     XLOGF(ERR, "Negative readdir offsets are illegal, off = {}", off);
     folly::throwSystemErrorExplicit(EINVAL);
   }
+
+  recheckPermissionIfExpired(context).get();
+
   updateAtime();
 
   // It's very common for userspace to readdir() a directory to completion and

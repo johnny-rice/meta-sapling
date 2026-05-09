@@ -817,6 +817,22 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   [[noreturn]] void throwRestrictedAccess() const;
 
   /**
+   * If this inode is restricted and the TTL has expired, re-validate
+   * permissions via check_permission. If the user now has access,
+   * calls transitionToUnrestricted() to populate this inode.
+   */
+  ImmediateFuture<folly::Unit> recheckPermissionIfExpired(
+      const ObjectFetchContextPtr& fetchContext);
+
+  /**
+   * Transition this inode from restricted to unrestricted. Fetch the real
+   * tree, rebuild DirContents, and install it under the usual rename/content
+   * locks.
+   */
+  ImmediateFuture<folly::Unit> transitionToUnrestricted(
+      const ObjectFetchContextPtr& fetchContext);
+
+  /**
    * Build DirContents for an unrestricted tree by checking the overlay
    * first (preserving existing inode numbers), falling back to
    * saveDirFromTree() for fresh allocation. Reused by startLoadingInode()
@@ -1179,6 +1195,13 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    * check confirms the user lacks access.
    */
   std::atomic<bool> isRestricted_{false};
+
+  /**
+   * Timestamp of the last permission recheck attempt for restricted inodes.
+   * Initialized to now() so newly created restricted inodes do not
+   * immediately retry.
+   */
+  std::atomic<std::chrono::steady_clock::time_point> lastPermissionCheck_{};
 
   /**
    * Valid state transitions:
