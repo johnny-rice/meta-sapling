@@ -1079,3 +1079,125 @@ TEST(TreeInode, childDematerializedSkipsOverlayWrite) {
 }
 
 #endif // _WIN32
+
+TEST(TreeInode, checkoutPropagatesIsRestricted) {
+  // Start with a tree that has no ACL directories.
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "int main() { return 0; }\n");
+  builder1.setFile("normal_dir/file.txt", "content");
+  TestMount testMount{builder1};
+
+  // Create a second commit that adds an ACL directory.
+  auto builder2 = builder1.clone();
+  builder2.setFile("acl_dir/file.txt", "acl content");
+  builder2.setDirIsRestricted("acl_dir");
+  builder2.finalize(testMount.getBackingStore(), true);
+  auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
+  commit2->setReady();
+
+  auto executor = testMount.getServerExecutor().get();
+  auto checkoutResult = testMount.getEdenMount()
+                            ->checkout(
+                                testMount.getRootInode(),
+                                RootId{"2"},
+                                ObjectFetchContext::getNullContext(),
+                                __func__)
+                            .semi()
+                            .via(executor);
+  testMount.drainServerExecutor();
+  ASSERT_TRUE(checkoutResult.isReady());
+  auto result = std::move(checkoutResult).get();
+  EXPECT_EQ(0, result.conflicts.size());
+
+  // Verify the new acl_dir entry has isRestricted set.
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->lockContentsRead();
+
+  auto aclIter = contents->entries.find("acl_dir"_pc);
+  ASSERT_NE(aclIter, contents->entries.end());
+  EXPECT_TRUE(aclIter->second.isDirectory());
+  EXPECT_TRUE(aclIter->second.isRestricted());
+}
+
+TEST(TreeInode, checkoutRemovesRestrictionWhenAclRemoved) {
+  // Start with a tree that has an ACL directory.
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "int main() { return 0; }\n");
+  builder1.setFile("acl_dir/file.txt", "acl content");
+  builder1.setDirIsRestricted("acl_dir");
+  TestMount testMount{builder1};
+
+  // Create a second commit where acl_dir exists but without isRestricted.
+  // Build from scratch rather than cloning since clone preserves isRestricted.
+  FakeTreeBuilder builder2;
+  builder2.setFile("src/main.c", "int main() { return 0; }\n");
+  builder2.setFile("acl_dir/file.txt", "acl content modified");
+  builder2.finalize(testMount.getBackingStore(), true);
+  auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
+  commit2->setReady();
+
+  auto executor = testMount.getServerExecutor().get();
+  auto checkoutResult = testMount.getEdenMount()
+                            ->checkout(
+                                testMount.getRootInode(),
+                                RootId{"2"},
+                                ObjectFetchContext::getNullContext(),
+                                __func__)
+                            .semi()
+                            .via(executor);
+  testMount.drainServerExecutor();
+  ASSERT_TRUE(checkoutResult.isReady());
+  auto result = std::move(checkoutResult).get();
+  EXPECT_EQ(0, result.conflicts.size());
+
+  // Verify acl_dir no longer has isRestricted set.
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->lockContentsRead();
+
+  auto aclIter = contents->entries.find("acl_dir"_pc);
+  ASSERT_NE(aclIter, contents->entries.end());
+  EXPECT_TRUE(aclIter->second.isDirectory());
+  EXPECT_FALSE(aclIter->second.isRestricted());
+}
+
+TEST(TreeInode, checkoutAddsRestrictionWhenAclAdded) {
+  // Start with a tree where acl_dir does not have isRestricted.
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "int main() { return 0; }\n");
+  builder1.setFile("acl_dir/file.txt", "acl content");
+  TestMount testMount{builder1};
+
+  // Create a second commit where acl_dir has isRestricted set AND content
+  // changes. The checkout code intentionally does not compare isRestricted
+  // alone — it only processes entries where the tree content differs. So we
+  // must also change a file to trigger checkout processing of acl_dir.
+  auto builder2 = builder1.clone();
+  builder2.replaceFile("acl_dir/file.txt", "acl content modified");
+  builder2.setDirIsRestricted("acl_dir");
+  builder2.finalize(testMount.getBackingStore(), true);
+  auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
+  commit2->setReady();
+
+  auto executor = testMount.getServerExecutor().get();
+  auto checkoutResult = testMount.getEdenMount()
+                            ->checkout(
+                                testMount.getRootInode(),
+                                RootId{"2"},
+                                ObjectFetchContext::getNullContext(),
+                                __func__)
+                            .semi()
+                            .via(executor);
+  testMount.drainServerExecutor();
+  ASSERT_TRUE(checkoutResult.isReady());
+  auto result = std::move(checkoutResult).get();
+  EXPECT_EQ(0, result.conflicts.size());
+
+  // Verify acl_dir now has isRestricted set.
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->lockContentsRead();
+
+  auto aclIter = contents->entries.find("acl_dir"_pc);
+  ASSERT_NE(aclIter, contents->entries.end());
+  EXPECT_TRUE(aclIter->second.isDirectory());
+  EXPECT_TRUE(aclIter->second.isRestricted());
+}

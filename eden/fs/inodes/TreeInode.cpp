@@ -4193,6 +4193,20 @@ std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntry(
   return ret;
 }
 
+namespace {
+/**
+ * Build a DirEntry from a source-control TreeEntry, allocating a fresh
+ * inode number from the given overlay.  Used by the checkout code paths.
+ */
+DirEntry dirEntryFromScmEntry(const TreeEntry& scmEntry, Overlay* overlay) {
+  return DirEntry{
+      modeFromTreeEntryType(scmEntry.getType()),
+      overlay->allocateInodeNumber(),
+      scmEntry.getObjectId(),
+      scmEntry.isRestricted()};
+}
+} // namespace
+
 template <typename Contents>
 std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntryImpl(
     CheckoutContext* ctx,
@@ -4227,6 +4241,8 @@ std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntryImpl(
       // On Windows: Filter executable type for comparison.
       compareTreeEntryType(
           oldScmEntry->second.getType(), newScmEntry->second.getType()) &&
+      oldScmEntry->second.isRestricted() ==
+          newScmEntry->second.isRestricted() &&
       getObjectStore().areObjectsKnownIdentical(
           oldScmEntry->second.getObjectId(),
           newScmEntry->second.getObjectId())) {
@@ -4380,9 +4396,7 @@ std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntryImpl(
   if (newScmEntry) {
     contents.emplace(
         newScmEntry->first,
-        modeFromTreeEntryType(newScmEntry->second.getType()),
-        getOverlay()->allocateInodeNumber(),
-        newScmEntry->second.getObjectId());
+        dirEntryFromScmEntry(newScmEntry->second, getOverlay()));
   }
 
   wasDirectoryListModified = true;
@@ -4459,9 +4473,7 @@ std::shared_ptr<CheckoutAction> TreeInode::processAbsentCheckoutEntry(
     if (success.hasValue()) {
       auto [it, inserted] = contents.emplace(
           newScmEntry->first,
-          modeFromTreeEntryType(newScmEntry->second.getType()),
-          getOverlay()->allocateInodeNumber(),
-          newScmEntry->second.getObjectId());
+          dirEntryFromScmEntry(newScmEntry->second, getOverlay()));
       XDCHECK(inserted);
     } else {
       if (folly::kIsWindows) {
@@ -4629,9 +4641,7 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
       if (newScmEntry) {
         auto [_it, inserted] = contents->entries.emplace(
             newScmEntry->first,
-            modeFromTreeEntryType(newScmEntry->second.getType()),
-            getOverlay()->allocateInodeNumber(),
-            newScmEntry->second.getObjectId());
+            dirEntryFromScmEntry(newScmEntry->second, getOverlay()));
         XDCHECK(inserted);
       }
     }
@@ -4770,9 +4780,8 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
               auto contents = parentInode->lockContentsWrite();
               auto ret = contents->entries.emplace(
                   newScmEntry->first,
-                  modeFromTreeEntryType(newScmEntry->second.getType()),
-                  parentInode->getOverlay()->allocateInodeNumber(),
-                  newScmEntry->second.getObjectId());
+                  dirEntryFromScmEntry(
+                      newScmEntry->second, parentInode->getOverlay()));
               inserted = ret.second;
             }
 
