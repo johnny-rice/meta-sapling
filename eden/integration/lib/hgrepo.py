@@ -295,8 +295,11 @@ class HgRepository(repobase.Repository):
         hgrc["remotefilelog"]["reponame"] = "test"
         hgrc["remotefilelog"]["cachepath"] = cachepath
 
-        # We should allow fetching tree aux data along with trees
-        hgrc.add_section("scmstore")
+        # We should allow fetching tree aux data along with trees.
+        # Use has_section() so callers that set other scmstore keys via
+        # apply_hg_config_variant() don't trip DuplicateSectionError here.
+        if not hgrc.has_section("scmstore"):
+            hgrc.add_section("scmstore")
         hgrc["scmstore"]["fetch-tree-aux-data"] = "true"
 
         # Some tests set these configs on their own. We shouldn't overwrite them.

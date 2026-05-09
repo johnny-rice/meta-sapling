@@ -275,6 +275,21 @@ python_unittest(
 )
 
 python_unittest(
+    name = "restricted_tree",
+    srcs = ["restricted_tree_test.py"],
+    compatible_with = [
+        "ovr_config//os:linux",
+        "ovr_config//os:macos",
+    ],
+    env = artifacts["env"],
+    supports_static_listing = False,
+    deps = [
+        "//eden/integration/hg/lib:testutil",
+        "//eden/integration/lib:lib",
+    ],
+)
+
+python_unittest(
     name = "revert",
     srcs = ["revert_test.py"],
     env = artifacts["env"],
