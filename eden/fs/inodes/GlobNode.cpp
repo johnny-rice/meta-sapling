@@ -90,6 +90,11 @@ struct TreeInodePtrRoot {
     return entry->isDirectory();
   }
 
+  /** Returns true if the given entry is restricted */
+  bool entryIsRestricted(const DirEntry* entry) {
+    return entry->isRestricted();
+  }
+
   /** Returns true if we should prefetch the blob content for the entry.
    * We only do this if the child is not already materialized */
   bool entryShouldPrefetch(const DirEntry* entry) {

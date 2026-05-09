@@ -136,6 +136,10 @@ class GlobNodeImpl {
       return entry->isTree();
     }
 
+    bool entryIsRestricted(const TreeEntry* entry) {
+      return entry->isRestricted();
+    }
+
     // We always need to prefetch file children of a raw Tree
     bool entryShouldPrefetch(const TreeEntry* entry) {
       return !entryIsTree(entry);
@@ -201,7 +205,10 @@ class GlobNodeImpl {
 
         // Remember to recurse through child dirs after we've released
         // the lock on the contents.
-        if (root.entryIsTree(&entry.second)) {
+        // Skip restricted directories entirely - don't recurse into them
+        // and don't include their contents in results.
+        if (root.entryIsTree(&entry.second) &&
+            !root.entryIsRestricted(&entry.second)) {
           if (root.entryShouldLoadChildTree(&entry.second)) {
             subDirNames.emplace_back(std::move(candidateName));
           } else {
@@ -340,7 +347,7 @@ class GlobNodeImpl {
                                   const auto& entry) {
       TaskTraceBlock block2{"GlobNodeImpl::evaluateImpl::recurseIfNecessary"};
       if ((!node->children_.empty() || !node->recursiveChildren_.empty()) &&
-          root.entryIsTree(entry)) {
+          root.entryIsTree(entry) && !root.entryIsRestricted(entry)) {
         if (root.entryShouldLoadChildTree(entry)) {
           recurse.emplace_back(name, node);
         } else {
@@ -556,7 +563,10 @@ class GlobNodeImpl {
 
         // Remember to recurse through child dirs after we've released
         // the lock on the contents.
-        if (root.entryIsTree(&entry.second)) {
+        // Skip restricted directories entirely - don't recurse into them
+        // and don't include their contents in results.
+        if (root.entryIsTree(&entry.second) &&
+            !root.entryIsRestricted(&entry.second)) {
           if (root.entryShouldLoadChildTree(&entry.second)) {
             subDirNames.emplace_back(std::move(candidateName));
           } else {
@@ -709,7 +719,7 @@ class GlobNodeImpl {
       TaskTraceBlock block2{
           "GlobNodeImpl::co_evaluateImpl::recurseIfNecessary"};
       if ((!node->children_.empty() || !node->recursiveChildren_.empty()) &&
-          root.entryIsTree(entry)) {
+          root.entryIsTree(entry) && !root.entryIsRestricted(entry)) {
         if (root.entryShouldLoadChildTree(entry)) {
           recurse.emplace_back(name, node);
         } else {

@@ -222,33 +222,11 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
                 f.write("should be allowed")
 
     async def test_glob_skips_restricted_dirs(self) -> None:
-        # FIXME(D99730326): glob does not yet filter restricted children. This
-        # commit asserts the current pre-impl behavior so the test is green
-        # at this revision:
-        #   * Client-side enforcement variants: glob returns restricted
-        #     entries (no filtering yet).
-        #   * Server-side enforcement variants: glob raises ApplicationError
-        #     because the unfiltered traversal hits a manifest the client is
-        #     not authorized to fetch.
-        # D99730326 ("Add restricted tree handling to glob traversal") will
-        # land the implementation and flip the assertion to require
-        # restricted entries to be excluded from glob results in both modes.
         params = GlobParams(
             mountPoint=self.mount_path_bytes,
             globs=["**/*.txt"],
             includeDotfiles=False,
         )
-        if self.expect_restricted and self.enable_server_acl_enforcement:
-            # FIXME(D99730326): post-impl this should NOT raise; glob should
-            # filter restricted children before they trigger the server-side
-            # PermissionDenied.
-            from thrift.python.exceptions import ApplicationError
-
-            with self.assertRaises(ApplicationError):
-                async with self.get_async_thrift_client() as client:
-                    await client.globFiles(params)
-            return
-
         async with self.get_async_thrift_client() as client:
             result = await client.globFiles(params)
 
@@ -261,9 +239,8 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
         restricted_files = [f for f in matching if f.startswith(b"restricted/")]
         nested_restricted_files = [f for f in matching if b"nested_restricted/" in f]
         if self.expect_restricted:
-            # FIXME(D99730326): post-impl this should be assertEqual([], ...).
-            self.assertGreater(len(restricted_files), 0)
-            self.assertGreater(len(nested_restricted_files), 0)
+            self.assertEqual(restricted_files, [])
+            self.assertEqual(nested_restricted_files, [])
         else:
             self.assertGreater(len(restricted_files), 0)
 
