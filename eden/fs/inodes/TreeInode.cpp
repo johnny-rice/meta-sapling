@@ -1412,7 +1412,8 @@ void TreeInode::childDematerialized(
     const RenameLock& renameLock,
     PathComponentPiece childName,
     ObjectId childScmId,
-    bool writeOverlay) {
+    bool writeOverlay,
+    bool isRestricted) {
   auto startTime = std::chrono::system_clock::now();
   bool wasAlreadyMaterialized = false;
   {
@@ -1441,13 +1442,15 @@ void TreeInode::childDematerialized(
     // are compatible, we want to migrate our inode to the new ID scheme, which
     // requires writing it to the overlay.
     if (!childEntry.isMaterialized() &&
-        childEntry.getObjectId().bytesEqual(childScmId)) {
+        childEntry.getObjectId().bytesEqual(childScmId) &&
+        childEntry.isRestricted() == isRestricted) {
       // Nothing to do.  Our child's state and our own are both unchanged.
       return;
     }
 
     // Mark the child dematerialized.
     childEntry.setDematerialized(childScmId);
+    childEntry.setRestricted(isRestricted);
 
     // Mark us materialized!
     //
@@ -3947,7 +3950,9 @@ ImmediateFuture<Unit> TreeInode::checkout(
               // reason is that we in theory need to rollback what was done in
               // case we can't invalidate.
               {
-                auto contents = self->lockContentsWrite();
+                // Checkout may be changing the restricted state of this inode,
+                // so use the internal lock path while invalidating it.
+                auto contents = self->getContentsUnchecked().wlock();
                 self->updateMtimeAndCtimeLocked(
                     contents->entries, self->getNow());
                 invalidation = self->invalidateChannelDirCache(*contents);
@@ -3985,8 +3990,13 @@ ImmediateFuture<Unit> TreeInode::checkout(
 bool TreeInode::canShortCircuitCheckout(
     CheckoutContext* ctx,
     const ObjectId& treeId,
+    bool isRestricted,
     const Tree* fromTree,
     const Tree* toTree) {
+  if (toTree && isRestricted != toTree->isRestricted()) {
+    return false;
+  }
+
   if (ctx->isDryRun()) {
     // In a dry-run update we only care about checking for conflicts
     // with the fromTree state.  Since we aren't actually performing any
@@ -4044,17 +4054,29 @@ void TreeInode::computeCheckoutActions(
     bool& wasDirectoryListModified) {
   auto computeActionsSpan = ctx->createSpan("computeCheckoutActions");
 
-  // Grab the contents_ lock for the duration of this function
-  auto contents = lockContentsWrite();
+  // Grab the contents_ lock for the duration of this function. Checkout is an
+  // internal operation and may need to populate a restricted placeholder.
+  auto contents = getContentsUnchecked().wlock();
 
   // If we are the same as some known source control Tree, check to see if we
   // can quickly tell if we have nothing to do for this checkout operation and
   // can return early.
   if (contents->treeId.has_value() &&
       canShortCircuitCheckout(
-          ctx, contents->treeId.value(), fromTree, toTree)) {
-    ctx->increaseCheckoutCounter(this->getInMemoryDescendants());
-    return;
+          ctx, contents->treeId.value(), isRestricted(), fromTree, toTree)) {
+    // If any child is restricted, take the slow path so
+    // processCheckoutEntryImpl can detect restricted→unrestricted transitions.
+    bool hasRestrictedChild = false;
+    for (auto& [name, entry] : contents->entries) {
+      if (entry.isRestricted()) {
+        hasRestrictedChild = true;
+        break;
+      }
+    }
+    if (!hasRestrictedChild) {
+      ctx->increaseCheckoutCounter(this->getInMemoryDescendants());
+      return;
+    }
   }
 
   // Walk through fromTree and toTree, and call the above helper functions as
@@ -4227,33 +4249,34 @@ std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntryImpl(
   // At most one of oldScmEntry and newScmEntry may be null.
   XDCHECK(oldScmEntry || newScmEntry);
 
-  // If we aren't doing a force checkout, we don't need to do anything
-  // for entries that are identical between the old and new source control
-  // trees.
-  //
-  // If we are doing a force checkout we need to process unmodified entries to
-  // revert them to the desired state if they were modified in the local
-  // filesystem.
-  if (!ctx->forceUpdate() && oldScmEntry && newScmEntry &&
+  const bool scmEntriesMatch = oldScmEntry && newScmEntry &&
       // TODO: This is technically incorrect for files that go from SYMLINK to
       // REGULAR (or vice versa).
       //
       // On Windows: Filter executable type for comparison.
-      compareTreeEntryType(
-          oldScmEntry->second.getType(), newScmEntry->second.getType()) &&
+      compareTreeEntryType(oldScmEntry->second.getType(),
+                           newScmEntry->second.getType()) &&
       oldScmEntry->second.isRestricted() ==
           newScmEntry->second.isRestricted() &&
       getObjectStore().areObjectsKnownIdentical(
-          oldScmEntry->second.getObjectId(),
-          newScmEntry->second.getObjectId())) {
+          oldScmEntry->second.getObjectId(), newScmEntry->second.getObjectId());
+
+  // Look to see if we have a child entry with this name.
+  const auto& name = oldScmEntry ? oldScmEntry->first : newScmEntry->first;
+  auto it = contents.find(name);
+  // If we aren't doing a force checkout, we don't need to do anything for
+  // entries that are identical between the old and new source control trees.
+  //
+  // Restricted placeholders are the exception: their children are hidden from
+  // contents_, so an absent matching child still needs to be repopulated when
+  // transitioning back to unrestricted.
+  if (!ctx->forceUpdate() && scmEntriesMatch &&
+      (!isRestricted() || it != contents.end())) {
     // TODO: Should we perhaps fall through anyway to report conflicts for
     // locally modified files?
     return nullptr;
   }
 
-  // Look to see if we have a child entry with this name.
-  const auto& name = oldScmEntry ? oldScmEntry->first : newScmEntry->first;
-  auto it = contents.find(name);
   if (it == contents.end()) {
     return processAbsentCheckoutEntry(
         ctx,
@@ -4301,7 +4324,8 @@ std::shared_ptr<CheckoutAction> TreeInode::processCheckoutEntryImpl(
           entry.getObjectId(), newScmEntry->second.getObjectId())) {
     // On Windows: Filter executable type for comparison.
     if (compareTreeEntryType(
-            oldScmEntry->second.getType(), newScmEntry->second.getType())) {
+            oldScmEntry->second.getType(), newScmEntry->second.getType()) &&
+        entry.isRestricted() == newScmEntry->second.isRestricted()) {
       // The inode already matches the checkout destination. So do nothing.
       return nullptr;
     }
@@ -4436,7 +4460,13 @@ std::shared_ptr<CheckoutAction> TreeInode::processAbsentCheckoutEntry(
                                  : newScmEntry->second.getDtype();
   bool contentsUpdated = false;
 
-  if (!oldScmEntry) {
+  if (isRestricted() && oldScmEntry) {
+    // Restricted directories are represented as empty placeholders. Missing
+    // children from the old tree are hidden, not locally removed.
+    if (newScmEntry && !ctx->isDryRun()) {
+      contentsUpdated = true;
+    }
+  } else if (!oldScmEntry) {
     // This is a new entry being added, that did not exist in the old tree
     // and does not currently exist in the filesystem.  Go ahead and add it
     // now.
@@ -4666,16 +4696,77 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
       // below to force the old name to be removed and then re-added with its
       // new name.
     } else {
-      // TODO: SCM entries today have limited file modes. We have simplified
-      // checkout to only handle directory, symlink, file, executable file.
-      // If we were to support full file permissions being updated via
-      // checkout, we would need to do that in or after the checkout operation.
-      // NFS invalidation is a hack, and a hack that relies on directory
-      // permissions never being changed during the checkout operation. We
-      // would need to be more clever with our invalidation hack for NFS if we
-      // supported changing permissions on checkout.
+      const auto& replacementEntry = *newScmEntry;
+      bool newRestricted =
+          newTree->isRestricted() || replacementEntry.second.isRestricted();
+
+      bool oldRestricted = false;
+      {
+        auto contents = getContentsUnchecked().rlock();
+        auto it = contents->entries.find(replacementEntry.first);
+        if (it != contents->entries.end()) {
+          oldRestricted = it->second.isRestricted();
+        }
+      }
+
+      if (newRestricted == oldRestricted) {
+        // Ordinary dir->dir checkout still recurses in place. Checkout only
+        // models the limited mode changes implied by SCM entry kinds; broader
+        // permission-only updates would need a separate invalidation path,
+        // especially for NFS.
+        return treeInode->checkout(ctx, std::move(oldTree), std::move(newTree))
+            .thenValue([](folly::Unit) { return InvalidationRequired::No; });
+      }
+
+      auto currentName = getInodeName(ctx, treeInode);
+      if (!ctx->isDryRun()) {
+        auto contents = getContentsUnchecked().wlock();
+        auto it = contents->entries.find(currentName.piece());
+        if (it == contents->entries.end() ||
+            it->second.getInode() != treeInode.get() ||
+            it->second.isRestricted() != oldRestricted) {
+          return InvalidationRequired::No;
+        }
+
+        auto invalidateResult = invalidateChannelEntryCache(
+            *contents, currentName.piece(), treeInode->getNodeId());
+        if (invalidateResult.hasException()) {
+          ctx->addError(
+              this, currentName.piece(), invalidateResult.exception());
+          return InvalidationRequired::No;
+        }
+      }
+
+      XLOGF(
+          DBG3,
+          "checkoutUpdateEntry({}): restriction transition for {}: {} -> {}",
+          getLogPath(),
+          name,
+          oldRestricted,
+          newRestricted);
       return treeInode->checkout(ctx, std::move(oldTree), std::move(newTree))
-          .thenValue([](folly::Unit) { return InvalidationRequired::No; });
+          .thenValue(
+              [ctx,
+               parentInode = inodePtrFromThis(),
+               treeInode,
+               currentName = std::move(currentName),
+               newRestricted](auto&&) -> ImmediateFuture<InvalidationRequired> {
+                if (ctx->isDryRun()) {
+                  return InvalidationRequired::No;
+                }
+
+                treeInode->isRestricted_.store(
+                    newRestricted, std::memory_order_relaxed);
+
+                auto contents = parentInode->getContentsUnchecked().wlock();
+                auto it = contents->entries.find(currentName.piece());
+                if (it == contents->entries.end() ||
+                    it->second.getInode() != treeInode.get()) {
+                  return InvalidationRequired::No;
+                }
+                it->second.setRestricted(newRestricted);
+                return InvalidationRequired::Yes;
+              });
     }
   }
 
@@ -4689,7 +4780,7 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
            newTree = std::move(newTree),
            parentInode = inodePtrFromThis(),
            treeInode,
-           newScmEntry](
+           newScmEntry = newScmEntry](
               auto&&) mutable -> ImmediateFuture<InvalidationRequired> {
             if (ctx->isDryRun()) {
               // If this is a dry run, simply report conflicts and don't update
@@ -4962,7 +5053,7 @@ void TreeInode::saveOverlayPostCheckout(
   bool isMaterialized;
   bool stateChanged;
   {
-    auto contents = lockContentsWrite();
+    auto contents = getContentsUnchecked().wlock();
 
     // Check to see if we need to be materialized or not.
     //
@@ -5065,6 +5156,9 @@ void TreeInode::saveOverlayPostCheckout(
 
     // Update the overlay to include the new entries, even if dematerialized.
     saveOverlayDir(contents->entries, isMaterialized);
+    if (tree) {
+      isRestricted_.store(tree->isRestricted(), std::memory_order_relaxed);
+    }
   }
 
   if (stateChanged) {
@@ -5091,7 +5185,11 @@ void TreeInode::saveOverlayPostCheckout(
             ctx->renameLock(), loc.name, writeOverlay);
       } else {
         loc.parent->childDematerialized(
-            ctx->renameLock(), loc.name, tree->getObjectId(), writeOverlay);
+            ctx->renameLock(),
+            loc.name,
+            tree->getObjectId(),
+            writeOverlay,
+            tree->isRestricted());
       }
     }
   }

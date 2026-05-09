@@ -496,7 +496,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       const RenameLock& renameLock,
       PathComponentPiece childName,
       ObjectId childScmId,
-      bool writeOverlay = true);
+      bool writeOverlay = true,
+      bool isRestricted = false);
 
   /**
    * Internal API only for use by InodeMap.
@@ -1030,6 +1031,7 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   static bool canShortCircuitCheckout(
       CheckoutContext* ctx,
       const ObjectId& treeId,
+      bool isRestricted,
       const Tree* fromTree,
       const Tree* toTree);
   void computeCheckoutActions(

@@ -221,7 +221,7 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
             with open(new_file_path, "w") as f:
                 f.write("should be allowed")
 
-    async def test_glob_skips_restricted_dirs(self) -> None:
+    async def test_glob_restricted_dirs(self) -> None:
         params = GlobParams(
             mountPoint=self.mount_path_bytes,
             globs=["**/*.txt"],
@@ -286,6 +286,154 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
                     dir_data.type,
                 )
                 self.assertIsNotNone(dir_data.dirListAttributeData)
+
+    def test_checkout_restricted_to_unrestricted(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(os.path.join(self.mount, "restricted"))
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(os.path.join(self.mount, "restricted"))
+            self.assertIn("secret.txt", entries)
+
+        # After checkout to swapped, restricted/ loses .slacl -- always accessible
+        self.repo.hg("update", self.swapped_commit)
+        entries = sorted(os.listdir(os.path.join(self.mount, "restricted")))
+        self.assertEqual(["secret.txt"], entries)
+
+    def test_checkout_unrestricted_to_restricted(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+        entries = sorted(os.listdir(os.path.join(self.mount, "regular")))
+        self.assertEqual(["file.txt"], entries)
+
+        # After checkout to swapped, regular/ gains .slacl
+        self.repo.hg("update", self.swapped_commit)
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(os.path.join(self.mount, "regular"))
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(os.path.join(self.mount, "regular"))
+            self.assertIn("file.txt", entries)
+
+    def test_checkout_unrestricted_to_restricted_with_local_changes(
+        self,
+    ) -> None:
+        """Non-force checkout of unrestricted -> restricted with dirty subtree
+        should surface a conflict and preserve the unrestricted directory."""
+        # Start at initial_commit where regular/ is unrestricted.
+        self.repo.hg("update", self.initial_commit)
+
+        # Materialize regular/ by writing to a file inside it via the mount.
+        regular_file = os.path.join(self.mount, "regular", "file.txt")
+        with open(regular_file, "w") as f:
+            f.write("local modification")
+
+        if self.expect_restricted:
+            # Non-force update into a restriction transition over a dirty
+            # subtree should fail rather than burying the local modification
+            # behind an EACCES wall. The checkout pre-check in
+            # TreeInode::checkoutUpdateEntry surfaces a MODIFIED_MODIFIED
+            # conflict; hg's checkout code reports this as an abort.
+            with self.assertRaises(hgrepo.HgError):
+                self.repo.hg("update", self.swapped_commit)
+
+            # Local modification must still be accessible and intact.
+            entries = os.listdir(os.path.join(self.mount, "regular"))
+            self.assertIn("file.txt", entries)
+            with open(regular_file, "r") as f:
+                self.assertEqual("local modification", f.read())
+        else:
+            self.repo.hg("update", self.swapped_commit)
+            entries = os.listdir(os.path.join(self.mount, "regular"))
+            self.assertIn("file.txt", entries)
+
+    def test_checkout_unrestricted_to_restricted_force(self) -> None:
+        """Force checkout (-C) of unrestricted -> restricted with dirty
+        subtree should drive the transition through and restrict the dir."""
+        self.repo.hg("update", self.initial_commit)
+
+        regular_file = os.path.join(self.mount, "regular", "file.txt")
+        with open(regular_file, "w") as f:
+            f.write("local modification")
+
+        # Force update: discards local state and applies the transition.
+        self.repo.hg("update", "-C", self.swapped_commit)
+
+        # Verify the subtree is now restricted (under expect_restricted) or
+        # still accessible (under config-off).
+        self._assert_dir_blocked(os.path.join(self.mount, "regular"))
+
+    def test_checkout_roundtrip_restricted(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+
+        self._assert_dir_blocked(os.path.join(self.mount, "restricted"))
+
+        self.repo.hg("update", self.swapped_commit)
+        entries = sorted(os.listdir(os.path.join(self.mount, "restricted")))
+        self.assertEqual(["secret.txt"], entries)
+
+        self.repo.hg("update", self.initial_commit)
+        self._assert_dir_blocked(os.path.join(self.mount, "restricted"))
+
+    def test_checkout_unloaded_inode_becomes_restricted(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+
+        # Do NOT access regular/ before checkout -- leave the inode unloaded.
+        self.repo.hg("update", self.swapped_commit)
+
+        # regular/ gains .slacl after checkout
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(os.path.join(self.mount, "regular"))
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(os.path.join(self.mount, "regular"))
+            self.assertIn("file.txt", entries)
+
+    def test_checkout_nested_restricted_transition(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+
+        # parent/nested_restricted/ has .slacl in initial commit
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(os.path.join(self.mount, "parent", "nested_restricted"))
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(
+                os.path.join(self.mount, "parent", "nested_restricted")
+            )
+            self.assertIn("deep.txt", entries)
+
+        # parent/normal_file.txt is always accessible
+        with open(os.path.join(self.mount, "parent", "normal_file.txt"), "r") as f:
+            self.assertEqual("normal", f.read())
+
+    def test_checkout_read_file_after_unrestrict(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+
+        # restricted/secret.txt blocked or readable depending on config
+        self._assert_file_blocked(os.path.join(self.mount, "restricted", "secret.txt"))
+
+        # After checkout to swapped, restricted/ becomes accessible
+        self.repo.hg("update", self.swapped_commit)
+        with open(os.path.join(self.mount, "restricted", "secret.txt"), "r") as f:
+            self.assertEqual("secret content", f.read())
+
+    def test_checkout_stat_permissions_change(self) -> None:
+        self.repo.hg("update", self.initial_commit)
+        st = os.lstat(os.path.join(self.mount, "regular"))
+        self.assertNotEqual(st.st_mode & 0o777, 0)
+
+        # After checkout to swapped, regular/ gains .slacl
+        self.repo.hg("update", self.swapped_commit)
+        st = os.lstat(os.path.join(self.mount, "regular"))
+        if self.expect_restricted:
+            self.assertEqual(st.st_mode & 0o777, 0)
+        else:
+            self.assertNotEqual(st.st_mode & 0o777, 0)
 
 
 class _RestrictedTreeConfigOffBase(_RestrictedTreeTestBase, metaclass=abc.ABCMeta):

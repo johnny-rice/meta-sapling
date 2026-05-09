@@ -1201,3 +1201,117 @@ TEST(TreeInode, checkoutAddsRestrictionWhenAclAdded) {
   EXPECT_TRUE(aclIter->second.isDirectory());
   EXPECT_TRUE(aclIter->second.isRestricted());
 }
+
+namespace {
+CheckoutConflict makeConflict(
+    ConflictType type,
+    folly::StringPiece path,
+    folly::StringPiece message = "",
+    Dtype dtype = Dtype::UNKNOWN) {
+  CheckoutConflict conflict;
+  conflict.type() = type;
+  conflict.path() = path.str();
+  conflict.message() = message.str();
+  conflict.dtype() = dtype;
+  return conflict;
+}
+} // namespace
+
+TEST(TreeInode, checkoutAddsRestrictionConflictsWithDirtyUnrestrictedDir) {
+  // Start with a tree where acl_dir does not have isRestricted.
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "int main() { return 0; }\n");
+  builder1.setFile("acl_dir/file.txt", "acl content");
+  TestMount testMount{builder1};
+
+  // Materialize acl_dir by writing to a file inside it. This makes
+  // acl_dir's subtree "dirty" from the checkout pre-check's perspective.
+  testMount.overwriteFile("acl_dir/file.txt", "local modification");
+
+  // Create a second commit where acl_dir has isRestricted set AND content
+  // changes, to force checkout to process the acl_dir entry.
+  auto builder2 = builder1.clone();
+  builder2.replaceFile("acl_dir/file.txt", "acl content modified");
+  builder2.setDirIsRestricted("acl_dir");
+  builder2.finalize(testMount.getBackingStore(), true);
+  auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
+  commit2->setReady();
+
+  auto executor = testMount.getServerExecutor().get();
+  auto checkoutResult = testMount.getEdenMount()
+                            ->checkout(
+                                testMount.getRootInode(),
+                                RootId{"2"},
+                                ObjectFetchContext::getNullContext(),
+                                __func__,
+                                CheckoutMode::NORMAL)
+                            .semi()
+                            .via(executor);
+  testMount.drainServerExecutor();
+  ASSERT_TRUE(checkoutResult.isReady());
+  auto result = std::move(checkoutResult).get();
+
+  // Expect the pre-check to surface a single directory-level
+  // MODIFIED_MODIFIED conflict at acl_dir and to leave the subtree
+  // untouched (no recursive descent on the non-force path).
+  EXPECT_THAT(
+      result.conflicts,
+      ::testing::UnorderedElementsAre(makeConflict(
+          ConflictType::MODIFIED_MODIFIED, "acl_dir", "", Dtype::DIR)));
+
+  // Verify acl_dir is still unrestricted — the swap was skipped.
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->lockContentsRead();
+
+  auto aclIter = contents->entries.find("acl_dir"_pc);
+  ASSERT_NE(aclIter, contents->entries.end());
+  EXPECT_TRUE(aclIter->second.isDirectory());
+  EXPECT_FALSE(aclIter->second.isRestricted());
+}
+
+TEST(TreeInode, checkoutForceAddsRestrictionOverDirtyUnrestrictedDir) {
+  // Same dirty setup as the non-force test.
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "int main() { return 0; }\n");
+  builder1.setFile("acl_dir/file.txt", "acl content");
+  TestMount testMount{builder1};
+
+  testMount.overwriteFile("acl_dir/file.txt", "local modification");
+
+  auto builder2 = builder1.clone();
+  builder2.replaceFile("acl_dir/file.txt", "acl content modified");
+  builder2.setDirIsRestricted("acl_dir");
+  builder2.finalize(testMount.getBackingStore(), true);
+  auto commit2 = testMount.getBackingStore()->putCommit(RootId{"2"}, builder2);
+  commit2->setReady();
+
+  // Force mode should report the conflict AND still apply the transition
+  // (matches the force-path semantics in processCheckoutEntryImpl).
+  auto executor = testMount.getServerExecutor().get();
+  auto checkoutResult = testMount.getEdenMount()
+                            ->checkout(
+                                testMount.getRootInode(),
+                                RootId{"2"},
+                                ObjectFetchContext::getNullContext(),
+                                __func__,
+                                CheckoutMode::FORCE)
+                            .semi()
+                            .via(executor);
+  testMount.drainServerExecutor();
+  ASSERT_TRUE(checkoutResult.isReady());
+  auto result = std::move(checkoutResult).get();
+
+  EXPECT_THAT(
+      result.conflicts,
+      ::testing::Contains(makeConflict(
+          ConflictType::MODIFIED_MODIFIED, "acl_dir", "", Dtype::DIR)));
+
+  // Verify acl_dir is now restricted — force mode drove the swap through.
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->lockContentsRead();
+
+  auto aclIter = contents->entries.find("acl_dir"_pc);
+  ASSERT_NE(aclIter, contents->entries.end());
+  EXPECT_TRUE(aclIter->second.isDirectory());
+  EXPECT_TRUE(aclIter->second.isRestricted());
+}
