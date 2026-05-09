@@ -8,6 +8,8 @@
 use anyhow::Error;
 use cxx::UniquePtr;
 use edenapi::SaplingRemoteApiError;
+use edenapi::types::SaplingRemoteApiServerError;
+use edenapi::types::SaplingRemoteApiServerErrorKind;
 use http_client::HttpClientError;
 use revisionstore::error::LfsFetchError;
 use revisionstore::error::LfsTransferError;
@@ -43,6 +45,20 @@ fn extract_http_client_error(err: &HttpClientError) -> (BackingStoreErrorKind, O
     }
 }
 
+fn extract_remote_api_server_error(
+    err: &SaplingRemoteApiServerError,
+) -> (BackingStoreErrorKind, Option<i32>) {
+    // The match statement is meant to be exhausitive without a default case to
+    // fall back into. If a new error type is introduced, it's supposed to be
+    // explicitly handled here.
+    match &err.err {
+        SaplingRemoteApiServerErrorKind::OpaqueError(_) => (BackingStoreErrorKind::Network, None),
+        SaplingRemoteApiServerErrorKind::PermissionDenied { .. } => {
+            (BackingStoreErrorKind::PermissionDenied, None)
+        }
+    }
+}
+
 fn extract_remote_api_error(err: &SaplingRemoteApiError) -> (BackingStoreErrorKind, Option<i32>) {
     /*
      * The match statement is meant to be exhausitive without a default case to fall back into.
@@ -54,8 +70,10 @@ fn extract_remote_api_error(err: &SaplingRemoteApiError) -> (BackingStoreErrorKi
         SaplingRemoteApiError::HttpError { status, .. } => {
             (BackingStoreErrorKind::Network, Some(status.as_u16().into()))
         }
-        SaplingRemoteApiError::ServerError(_)
-        | SaplingRemoteApiError::NoResponse
+        SaplingRemoteApiError::ServerError(server_err) => {
+            extract_remote_api_server_error(server_err)
+        }
+        SaplingRemoteApiError::NoResponse
         | SaplingRemoteApiError::IncompleteResponse(_)
         | SaplingRemoteApiError::ParseResponse(_) => (BackingStoreErrorKind::Network, None),
         SaplingRemoteApiError::RequestSerializationFailed(_) => (BackingStoreErrorKind::IO, None),
@@ -104,14 +122,17 @@ fn extract_indexedlog_error(err: &indexedlog::Error) -> BackingStoreErrorKind {
     }
 }
 
-/// Translate anyhow errors from the backinstore
-/// to SaplingBackingStoreError in C++ for EdenFS to consume
-pub(crate) fn into_backingstore_err(err: Error) -> UniquePtr<SaplingBackingStoreError> {
-    let msg = format!("{:?}", err);
+fn classify_backingstore_error(err: &Error) -> (BackingStoreErrorKind, Option<i32>) {
     let mut kind = BackingStoreErrorKind::Generic;
     let mut code: Option<i32> = None;
+    // Per-key batch tree fetches surface SaplingRemoteApiServerError directly,
+    // while request-level failures wrap it in SaplingRemoteApiError::ServerError.
+    // Check the direct server error first so both shapes classify the same way.
     for e in err.chain() {
-        if let Some(e) = e.downcast_ref::<SaplingRemoteApiError>() {
+        if let Some(e) = e.downcast_ref::<SaplingRemoteApiServerError>() {
+            (kind, code) = extract_remote_api_server_error(e);
+            break;
+        } else if let Some(e) = e.downcast_ref::<SaplingRemoteApiError>() {
             (kind, code) = extract_remote_api_error(e);
             break;
         } else if let Some(e) = e.downcast_ref::<LfsFetchError>() {
@@ -122,6 +143,14 @@ pub(crate) fn into_backingstore_err(err: Error) -> UniquePtr<SaplingBackingStore
             break;
         }
     }
+    (kind, code)
+}
+
+/// Translate anyhow errors from the backinstore
+/// to SaplingBackingStoreError in C++ for EdenFS to consume
+pub(crate) fn into_backingstore_err(err: Error) -> UniquePtr<SaplingBackingStoreError> {
+    let msg = format!("{:?}", err);
+    let (kind, code) = classify_backingstore_error(&err);
 
     match code {
         Some(code) => backingstore_error_with_code(&msg, kind, code),
@@ -135,8 +164,11 @@ mod tests {
 
     #[test]
     fn test_extract_remote_api_error() {
+        use edenapi::types::SaplingRemoteApiServerError;
+        use edenapi::types::SaplingRemoteApiServerErrorKind;
         use http_client::HttpClientError;
         use http_client::curl;
+        use types::HgId;
 
         let test_cases = vec![
             (
@@ -167,6 +199,29 @@ mod tests {
                 SaplingRemoteApiError::Http(HttpClientError::Curl(curl::Error::new(7))),
                 BackingStoreErrorKind::Network,
                 Some(7),
+            ),
+            (
+                "ServerError(PermissionDenied)",
+                SaplingRemoteApiError::ServerError(Box::new(SaplingRemoteApiServerError {
+                    err: SaplingRemoteApiServerErrorKind::PermissionDenied {
+                        tree_id: HgId::null_id().clone(),
+                        request_acl: "test-acl".to_string(),
+                    },
+                    key: None,
+                })),
+                BackingStoreErrorKind::PermissionDenied,
+                None,
+            ),
+            (
+                "ServerError(OpaqueError)",
+                SaplingRemoteApiError::ServerError(Box::new(SaplingRemoteApiServerError {
+                    err: SaplingRemoteApiServerErrorKind::OpaqueError(
+                        "internal server error".to_string(),
+                    ),
+                    key: None,
+                })),
+                BackingStoreErrorKind::Network,
+                None,
             ),
         ];
 
@@ -257,5 +312,39 @@ mod tests {
                 name, expected_code
             );
         }
+    }
+
+    #[test]
+    fn test_classify_backingstore_error_direct_server_error_permission_denied() {
+        use edenapi::types::SaplingRemoteApiServerError;
+        use edenapi::types::SaplingRemoteApiServerErrorKind;
+        use types::HgId;
+
+        let server_err = SaplingRemoteApiServerError {
+            err: SaplingRemoteApiServerErrorKind::PermissionDenied {
+                tree_id: HgId::null_id().clone(),
+                request_acl: "test-acl".to_string(),
+            },
+            key: None,
+        };
+        let anyhow_err: anyhow::Error = server_err.into();
+        let (kind, code) = classify_backingstore_error(&anyhow_err);
+        assert_eq!(kind, BackingStoreErrorKind::PermissionDenied);
+        assert_eq!(code, None);
+    }
+
+    #[test]
+    fn test_classify_backingstore_error_direct_server_error_opaque_is_network() {
+        use edenapi::types::SaplingRemoteApiServerError;
+        use edenapi::types::SaplingRemoteApiServerErrorKind;
+
+        let server_err = SaplingRemoteApiServerError {
+            err: SaplingRemoteApiServerErrorKind::OpaqueError("internal server error".to_string()),
+            key: None,
+        };
+        let anyhow_err: anyhow::Error = server_err.into();
+        let (kind, code) = classify_backingstore_error(&anyhow_err);
+        assert_eq!(kind, BackingStoreErrorKind::Network);
+        assert_eq!(code, None);
     }
 }
