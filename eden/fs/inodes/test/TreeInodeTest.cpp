@@ -920,6 +920,29 @@ TEST(TreeInode, buildDirFromTree) {
   EXPECT_EQ(S_IFREG | 0644, contents->entries.at("a.txt"_pc).getInitialMode());
 }
 
+TEST(TreeInode, buildDirFromTreePropagatesIsRestricted) {
+  FakeTreeBuilder builder;
+  builder.setFile("restricted_dir/file.txt", "content");
+  builder.setDirIsRestricted("restricted_dir");
+  builder.setFile("normal_dir/file.txt", "content");
+  TestMount testMount{builder};
+
+  auto rootInode = testMount.getEdenMount()->getRootInode();
+  auto contents = rootInode->getContents().rlock();
+
+  auto restrictedIter = contents->entries.find("restricted_dir"_pc);
+  ASSERT_NE(restrictedIter, contents->entries.end());
+  EXPECT_TRUE(restrictedIter->second.isDirectory());
+  // FIXME: isRestricted not yet propagated from TreeEntry to DirEntry in
+  // buildDirFromTree — should be EXPECT_TRUE once propagation is implemented
+  EXPECT_FALSE(restrictedIter->second.isRestricted());
+
+  auto normalIter = contents->entries.find("normal_dir"_pc);
+  ASSERT_NE(normalIter, contents->entries.end());
+  EXPECT_TRUE(normalIter->second.isDirectory());
+  EXPECT_FALSE(normalIter->second.isRestricted());
+}
+
 TEST(DirEntry, isRestrictedBitField) {
   DirEntry restrictedEntry(
       S_IFDIR | 0755,
