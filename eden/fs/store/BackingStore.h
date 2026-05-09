@@ -321,6 +321,17 @@ class BackingStore : public RootIdCodec, public ObjectIdCodec {
       const std::vector<std::string>& prefixes) = 0;
 
   /**
+   * Check whether the caller has access to the given manifest ID.
+   * Returns true if access is allowed, false if denied.
+   * Throws on error (e.g. permission service unreachable).
+   * Default implementation returns true (no restrictions for non-SLAPI stores).
+   */
+  virtual ImmediateFuture<bool> checkPermission(const ObjectId& manifestId) {
+    (void)manifestId;
+    return true;
+  }
+
+  /**
    * Prefetch all the blobs represented by the HashRange.
    *
    * The caller is responsible for making sure that the HashRange stays valid

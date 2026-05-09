@@ -647,6 +647,8 @@ class SaplingBackingStore final
       const std::vector<std::string>& globs,
       const std::vector<std::string>& prefixes) override;
 
+  ImmediateFuture<bool> checkPermission(const ObjectId& manifestId) override;
+
   /**
    * The worker runloop function.
    */

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -2373,6 +2374,18 @@ SaplingBackingStore::co_getGlobFiles(
   stats_->increment(&SaplingBackingStoreStats::fetchGlobFilesSuccess);
 
   co_return BackingStore::GetGlobFilesResult{std::move(files), id};
+}
+
+ImmediateFuture<bool> SaplingBackingStore::checkPermission(
+    const ObjectId& manifestId) {
+  auto hgId = manifestId.getBytes();
+  auto result = sapling_backingstore_check_permission(
+      *store_.get(), rust::Slice<const uint8_t>{hgId.data(), hgId.size()});
+
+  if (result.error != nullptr) {
+    return makeImmediateFuture<bool>(std::runtime_error(result.error->what()));
+  }
+  return result.has_access;
 }
 
 void SaplingBackingStore::logBackingStoreFetch(
