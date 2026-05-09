@@ -3078,7 +3078,7 @@ ImmediateFuture<TreeInodePtr> ensureDirectoryExistsHelper(
     PathComponentPiece childName,
     RelativePathPiece rest,
     const ObjectFetchContextPtr& context) {
-  auto contents = parent->getContentsUnchecked().rlock();
+  auto contents = parent->lockContentsRead();
   if (auto* child = folly::get_ptr(contents->entries, childName)) {
     if (!child->isDirectory()) {
       throw InodeError(EEXIST, parent, childName);

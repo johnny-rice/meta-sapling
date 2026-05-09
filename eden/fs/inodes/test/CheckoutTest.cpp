@@ -1116,12 +1116,9 @@ TEST(Checkout, checkoutModifiesDirectoryDuringLoad) {
   EXPECT_EQ(0, result.conflicts.size());
 
   auto inode = std::move(inodeFuture).get().asTreePtr();
+  EXPECT_EQ(0, inode->lockContentsRead()->entries.count("file.txt"_pc));
   EXPECT_EQ(
-      0, inode->getContentsUnchecked().rlock()->entries.count("file.txt"_pc));
-  EXPECT_EQ(
-      1,
-      inode->getContentsUnchecked().rlock()->entries.count(
-          "differentfile.txt"_pc));
+      1, inode->lockContentsRead()->entries.count("differentfile.txt"_pc));
 }
 
 TEST(Checkout, checkoutCaseChanged) {
@@ -1279,14 +1276,14 @@ TEST(Checkout, checkoutUpdatesUnlinkedStatusForLoadedTrees) {
                 ->lookupTreeInode(subInodeNumber)
                 .get(1ms);
   {
-    auto subTreeContents = subTree->getContentsUnchecked().rlock();
+    auto subTreeContents = subTree->lockContentsRead();
     EXPECT_TRUE(subTree->isUnlinked());
     // Unlinked inodes are considered materialized?
     EXPECT_TRUE(subTreeContents->isMaterialized());
   }
 
   auto dirTree = testMount.getTreeInode("dir"_relpath);
-  auto dirContents = dirTree->getContentsUnchecked().rlock();
+  auto dirContents = dirTree->lockContentsRead();
   EXPECT_FALSE(dirContents->isMaterialized());
 }
 

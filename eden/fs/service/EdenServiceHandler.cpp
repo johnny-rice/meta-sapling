@@ -6974,8 +6974,8 @@ EdenServiceHandler::semifuture_invalidateKernelInodeCache(
 
     // Invalidate all parent/child relationships potentially cached.
     if (treePtr != nullptr) {
-      const auto& dir = treePtr->getContentsUnchecked().rlock();
-      for (const auto& entry : dir->entries) {
+      auto contents = treePtr->lockContentsRead();
+      for (const auto& entry : contents->entries) {
         fuseChannel->invalidateEntry(inode->getNodeId(), entry.first);
       }
     }
@@ -7010,11 +7010,10 @@ EdenServiceHandler::semifuture_invalidateKernelInodeCache(
                          // so we settle for invalidating the children
                          // themselves.
                          if (treePtr != nullptr) {
-                           const auto& dir =
-                               treePtr->getContentsUnchecked().rlock();
                            std::vector<ImmediateFuture<folly::Unit>>
                                childInvalidations{};
-                           for (const auto& entry : dir->entries) {
+                           auto contents = treePtr->lockContentsRead();
+                           for (const auto& entry : contents->entries) {
                              auto childPath = RelativePath{*path} + entry.first;
                              auto childInode = inodeFromUserPath(
                                  mountHandle.getEdenMount(),

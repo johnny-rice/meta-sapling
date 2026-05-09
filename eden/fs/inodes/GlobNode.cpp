@@ -39,8 +39,8 @@ struct TreeInodePtrRoot {
   explicit TreeInodePtrRoot(TreeInodePtr root) : root(std::move(root)) {}
 
   /** Return an object that holds a lock over the children */
-  folly::Synchronized<TreeInodeState>::RLockedPtr lockContents() {
-    return root->getContentsUnchecked().rlock();
+  folly::Synchronized<TreeInodeState>::ConstLockedPtr lockContents() {
+    return root->lockContentsRead();
   }
 
   /** Given the return value from lockContents and a name,
@@ -62,7 +62,8 @@ struct TreeInodePtrRoot {
    * The returned iterator yields ENTRY elements that can be
    * used with the entryXXX methods below. */
   const DirContents& iterate(
-      const folly::Synchronized<TreeInodeState>::RLockedPtr& contents) const {
+      const folly::Synchronized<TreeInodeState>::ConstLockedPtr& contents)
+      const {
     return contents->entries;
   }
 

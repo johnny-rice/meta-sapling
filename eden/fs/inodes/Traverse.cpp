@@ -14,8 +14,6 @@
 
 namespace facebook::eden {
 
-namespace {
-
 std::vector<ChildEntry> parseDirContents(const DirContents& contents) {
   std::vector<ChildEntry> results;
   results.reserve(contents.size());
@@ -30,8 +28,6 @@ std::vector<ChildEntry> parseDirContents(const DirContents& contents) {
   }
   return results;
 }
-
-} // namespace
 
 void traverseTreeInodeChildren(
     Overlay* overlay,
@@ -79,20 +75,14 @@ void traverseObservedInodes(
     TraversalCallbacks& callbacks) {
   auto* overlay = root.getMount()->getOverlay();
 
-  std::vector<ChildEntry> children;
-  std::optional<ObjectId> id;
-  {
-    auto contents = root.getContentsUnchecked().rlock();
-    children = parseDirContents(contents->entries);
-    id = contents->treeId;
-  }
+  auto snapshot = root.getTraversalSnapshot();
 
   traverseTreeInodeChildren(
       overlay,
-      children,
+      snapshot.children,
       rootPath,
       root.getNodeId(),
-      id,
+      snapshot.treeId,
       root.debugGetFsRefcount(),
       callbacks);
 }

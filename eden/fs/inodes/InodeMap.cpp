@@ -1275,7 +1275,7 @@ optional<InodeMap::UnloadedInode> InodeMap::updateOverlayForUnload(
           parent, name, isUnlinked, treeContents.treeId, fsCount);
     }
 
-    // If any of this inode's childrens are in unloadedInodes_, then this
+    // If any of this inode's children are in unloadedInodes_, then this
     // inode, as its parent, must not be forgotten.
     for (const auto& pair : treeContents.entries) {
       const auto& childName = pair.first;

@@ -784,14 +784,7 @@ ImmediateFuture<Unit> TestMount::loadAllInodesFuture(
   // (If necessary we could make a more efficient version of this that starts
   // all the child loads while holding the lock.  However, we don't really care
   // about efficiency for test code, and this is much simpler.)
-  std::vector<PathComponent> childNames;
-  {
-    auto contents = treeInode->getContentsUnchecked().rlock();
-    childNames.reserve(contents->entries.size());
-    for (const auto& entry : contents->entries) {
-      childNames.emplace_back(entry.first);
-    }
-  }
+  std::vector<PathComponent> childNames = treeInode->getChildNames();
 
   // Now start all the loads.
   std::vector<ImmediateFuture<Unit>> childFutures;

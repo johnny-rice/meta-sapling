@@ -270,6 +270,23 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
     return contents_;
   }
 
+  /**
+   * Return a copy of all child entry names. This acquires and releases the
+   * contents lock internally.
+   */
+  std::vector<PathComponent> getChildNames() const;
+
+  /**
+   * Snapshot of directory entries and tree ID for traversal purposes.
+   * Copies entry metadata so the caller can use it without holding
+   * the contents lock.
+   */
+  struct TraversalSnapshot {
+    std::vector<ChildEntry> children;
+    std::optional<ObjectId> treeId;
+  };
+  TraversalSnapshot getTraversalSnapshot() const;
+
   std::optional<ObjectId> getObjectId() const override;
 
   bool isMaterialized() const override {

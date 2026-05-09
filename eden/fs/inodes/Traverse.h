@@ -17,6 +17,7 @@
 namespace facebook::eden {
 
 class DirEntry;
+struct DirContents;
 class TreeInode;
 
 /**
@@ -52,6 +53,8 @@ struct TraversalCallbacks {
    */
   virtual bool shouldRecurse(const ChildEntry& entry) = 0;
 };
+
+std::vector<ChildEntry> parseDirContents(const DirContents& contents);
 
 /**
  * Starting from the given loaded TreeInode root, performs a pre-order traversal

@@ -346,7 +346,7 @@ ParentInodeInfo InodeBase::getParentInfo() const {
           ParentContentsPtr{}};
     }
     // Now grab our parent's contents lock.
-    auto parentContents = parent->getContentsUnchecked().wlock();
+    auto parentContents = parent->lockContentsWrite();
 
     // After acquiring our parent's contents lock we have to make sure it is
     // actually still our parent.  If it is we are done and can break out of

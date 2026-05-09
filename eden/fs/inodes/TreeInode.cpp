@@ -358,6 +358,22 @@ ImmediateFuture<struct stat> TreeInode::stat(
   return statWithCurrentRestrictionState();
 }
 
+std::vector<PathComponent> TreeInode::getChildNames() const {
+  auto contents = lockContentsRead();
+  std::vector<PathComponent> names;
+  names.reserve(contents->entries.size());
+  for (const auto& entry : contents->entries) {
+    names.emplace_back(entry.first);
+  }
+  return names;
+}
+
+TreeInode::TraversalSnapshot TreeInode::getTraversalSnapshot() const {
+  auto contents = lockContentsRead();
+  return TraversalSnapshot{
+      parseDirContents(contents->entries), contents->treeId};
+}
+
 std::optional<ImmediateFuture<VirtualInode>> TreeInode::rlockGetOrFindChild(
     const TreeInodeState& contents,
     PathComponentPiece name,
