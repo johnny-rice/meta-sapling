@@ -193,10 +193,14 @@ TreeInode::TreeInode(
 
 TreeInode::~TreeInode() = default;
 
-ImmediateFuture<struct stat> TreeInode::stat(
-    const ObjectFetchContextPtr& context) {
-  logAccess(*context);
-  notifyParentOfStat(/*isFile=*/false, *context);
+struct stat TreeInode::statWithCurrentRestrictionState() const {
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    struct stat st{};
+    st.st_ino = folly::to_narrow(getNodeId().get());
+    st.st_mode = S_IFDIR; // directory with zero permission bits
+    st.st_nlink = 2; // . and ..
+    return st;
+  }
 
   auto st = getMount()->initStatData();
   st.st_ino = folly::to_narrow(getNodeId().get());
@@ -231,6 +235,23 @@ ImmediateFuture<struct stat> TreeInode::stat(
 #endif
 
   return st;
+}
+
+void TreeInode::throwRestrictedAccess() const {
+  folly::throwSystemErrorExplicit(
+      EACCES,
+      fmt::format(
+          "path ACL restriction: directory access denied for {} (inode {})",
+          getLogPath(),
+          getNodeId()));
+}
+
+ImmediateFuture<struct stat> TreeInode::stat(
+    const ObjectFetchContextPtr& context) {
+  logAccess(*context);
+  notifyParentOfStat(/*isFile=*/false, *context);
+
+  return statWithCurrentRestrictionState();
 }
 
 std::optional<ImmediateFuture<VirtualInode>> TreeInode::rlockGetOrFindChild(
@@ -1467,6 +1488,9 @@ std::optional<ObjectId> TreeInode::getObjectId() const {
 
 ImmediateFuture<std::optional<Hash32>> TreeInode::getDigestHash(
     const ObjectFetchContextPtr& fetchContext) {
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    return std::optional<Hash32>(std::nullopt);
+  }
   logAccess(*fetchContext);
   auto state = contents_.rlock();
 
@@ -1481,6 +1505,9 @@ ImmediateFuture<std::optional<Hash32>> TreeInode::getDigestHash(
 
 ImmediateFuture<std::optional<uint64_t>> TreeInode::getDigestSize(
     const ObjectFetchContextPtr& fetchContext) {
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    return std::optional<uint64_t>(std::nullopt);
+  }
   logAccess(*fetchContext);
   auto state = contents_.rlock();
 
@@ -1496,6 +1523,9 @@ ImmediateFuture<std::optional<uint64_t>> TreeInode::getDigestSize(
 
 ImmediateFuture<std::optional<TreeAuxData>> TreeInode::getTreeAuxData(
     const ObjectFetchContextPtr& fetchContext) {
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    return std::optional<TreeAuxData>(std::nullopt);
+  }
   logAccess(*fetchContext);
   auto state = contents_.rlock();
 

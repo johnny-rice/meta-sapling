@@ -241,15 +241,19 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
 
   /**
    * Acquire a read lock on the contents.
+   * Calls checkAccess() to enforce path ACL restrictions.
    */
   folly::Synchronized<TreeInodeState>::ConstLockedPtr lockContentsRead() const {
+    checkAccess();
     return contents_.rlock();
   }
 
   /**
    * Acquire a write lock on the contents.
+   * Calls checkAccess() to enforce path ACL restrictions.
    */
   folly::Synchronized<TreeInodeState>::LockedPtr lockContentsWrite() {
+    checkAccess();
     return contents_.wlock();
   }
 
@@ -265,7 +269,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   }
 
   /**
-   * Direct access to contents without going through the lockContents* helpers.
+   * Direct access to contents without ACL checks. Only for internal
+   * operations that must bypass restrictions (inode unload, checkout).
    * Prefer lockContentsRead() / lockContentsWrite() for normal access.
    */
   const folly::Synchronized<TreeInodeState>& getContentsUnchecked() const {
@@ -627,6 +632,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   InodeMetadata getMetadataLocked(const DirContents&) const;
 #endif
 
+  struct stat statWithCurrentRestrictionState() const;
+
   /**
    * The InodeMap is guaranteed to remain valid for at least the lifetime of
    * the TreeInode object.
@@ -789,6 +796,35 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    */
   template <typename Fn>
   bool readdirImpl(off_t offset, const ObjectFetchContextPtr& context, Fn add);
+
+ public:
+  /**
+   * Returns true if this directory is restricted by a path ACL.
+   * Restricted directories deny access to their contents.
+   */
+  bool isRestricted() const {
+    return isRestricted_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  /**
+   * Throws EACCES if this directory is restricted by a path ACL.
+   * Called by guarded lock accessors before contents_ acquisition.
+   *
+   * "has_acl" in the Sapling layer means a tree entry has an ACL file
+   * present — it does not imply restriction. isRestricted is only set
+   * after a permission check determines the user lacks access.
+   */
+  void checkAccess() const {
+    if (FOLLY_UNLIKELY(isRestricted_.load(std::memory_order_relaxed))) {
+      throwRestrictedAccess();
+    }
+  }
+
+  /**
+   * Throws EACCES with inode context for restricted directory access.
+   */
+  [[noreturn]] void throwRestrictedAccess() const;
 
   /**
    * createImpl() is a helper function for creating new children inodes.
@@ -1133,9 +1169,9 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   folly::Synchronized<TreeInodeState> contents_;
 
   /**
-   * True if this directory is restricted by a path ACL.
-   * Stored separately from contents_ so restriction metadata can be plumbed
-   * through TreeInode independently from later access-control behavior.
+   * True if this directory is restricted by a path ACL. When set,
+   * checkAccess() throws EACCES and stat() clears permission bits.
+   * Contents are empty — no tree data was fetched from the server.
    *
    * Derived from "has_acl" in the Sapling layer after a permission
    * check confirms the user lacks access.
