@@ -920,6 +920,28 @@ TEST(TreeInode, buildDirFromTree) {
   EXPECT_EQ(S_IFREG | 0644, contents->entries.at("a.txt"_pc).getInitialMode());
 }
 
+TEST(DirEntry, isRestrictedBitField) {
+  DirEntry restrictedEntry(
+      S_IFDIR | 0755,
+      43_ino,
+      ObjectId("def"),
+      /*isRestricted=*/true);
+  EXPECT_TRUE(restrictedEntry.isRestricted());
+
+  DirEntry defaultEntry(S_IFDIR | 0755, 44_ino, ObjectId("ghi"));
+  EXPECT_FALSE(defaultEntry.isRestricted());
+
+  DirEntry materialized(S_IFDIR | 0755, 45_ino);
+  EXPECT_FALSE(materialized.isRestricted());
+
+  DirEntry mutableEntry(S_IFDIR | 0755, 46_ino, ObjectId("jkl"));
+  EXPECT_FALSE(mutableEntry.isRestricted());
+  mutableEntry.setRestricted(true);
+  EXPECT_TRUE(mutableEntry.isRestricted());
+  mutableEntry.setRestricted(false);
+  EXPECT_FALSE(mutableEntry.isRestricted());
+}
+
 TEST(TreeInode, childMaterializedSkipsOverlayWrite) {
   FakeTreeBuilder builder;
   builder.setFiles({

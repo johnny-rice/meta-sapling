@@ -238,6 +238,31 @@ TEST_F(OverlayTest, roundTripThroughSaveAndLoad) {
   EXPECT_TRUE(two.isMaterialized());
 }
 
+TEST_F(OverlayTest, roundTripThroughSaveAndLoadPreservesIsRestricted) {
+  auto id = ObjectId::fromHex("0123456789012345678901234567890123456789");
+  auto overlay = mount_.getEdenMount()->getOverlay();
+  auto ino1 = overlay->allocateInodeNumber();
+  auto ino2 = overlay->allocateInodeNumber();
+  auto ino3 = overlay->allocateInodeNumber();
+
+  DirContents dir(kPathMapDefaultCaseSensitive);
+  dir.emplace(
+      "restricted"_pc,
+      DirEntry{S_IFDIR | 0755, ino2, id, /*isRestricted=*/true});
+  dir.emplace(
+      "normal"_pc, DirEntry{S_IFDIR | 0755, ino3, id, /*isRestricted=*/false});
+
+  overlay->saveOverlayDir(ino1, dir);
+  auto result = overlay->loadOverlayDir(ino1);
+  ASSERT_TRUE(!result.empty());
+  EXPECT_EQ(2, result.size());
+
+  const auto& restricted = result.find("restricted"_pc)->second;
+  const auto& normal = result.find("normal"_pc)->second;
+  EXPECT_TRUE(restricted.isRestricted());
+  EXPECT_FALSE(normal.isRestricted());
+}
+
 TEST_F(OverlayTest, getFilePath) {
   InodePath path;
 
