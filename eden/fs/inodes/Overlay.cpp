@@ -540,15 +540,21 @@ bool Overlay::buildDirEntries(
       shouldRewriteOverlay = true;
     }
 
+    const bool isRestricted =
+        apache::thrift::is_non_optional_field_set_manually_or_by_serializer(
+            value.isRestricted())
+        ? *value.isRestricted()
+        : false;
     if (value.hash() && !value.hash()->empty()) {
       auto hash = ObjectId{folly::ByteRange{folly::StringPiece{*value.hash()}}};
       entries.emplace_back(
           PathComponent{name},
-          DirEntry{static_cast<mode_t>(*value.mode()), ino, hash});
+          DirEntry{
+              static_cast<mode_t>(*value.mode()), ino, hash, isRestricted});
     } else {
       entries.emplace_back(
           PathComponent{name},
-          DirEntry{static_cast<mode_t>(*value.mode()), ino});
+          DirEntry{static_cast<mode_t>(*value.mode()), ino, isRestricted});
     }
   });
 
@@ -612,6 +618,7 @@ overlay::OverlayEntry Overlay::serializeOverlayEntry(const DirEntry& ent) {
   if (!ent.isMaterialized()) {
     entry.hash() = ent.getObjectId().asString();
   }
+  entry.isRestricted() = ent.isRestricted();
 
   return entry;
 }

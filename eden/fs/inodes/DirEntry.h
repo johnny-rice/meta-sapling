@@ -40,25 +40,27 @@ class DirEntry {
   /**
    * Create an id for a non-materialized entry.
    */
-  DirEntry(mode_t m, InodeNumber number, ObjectId id)
+  DirEntry(mode_t m, InodeNumber number, ObjectId id, bool isRestricted = false)
       : initialMode_{m},
         hasId_{true},
         hasInodePointer_{false},
+        isRestricted_{isRestricted ? 1u : 0u},
         id_{id},
         inodeNumber_{number} {
-    XCHECK_EQ(m, m & 0x3fffffff);
+    XCHECK_EQ(m, m & 0x1fffffff);
     XDCHECK(number.hasValue());
   }
 
   /**
    * Create an id for a materialized entry.
    */
-  DirEntry(mode_t m, InodeNumber number)
+  DirEntry(mode_t m, InodeNumber number, bool isRestricted = false)
       : initialMode_{m},
         hasId_{false},
         hasInodePointer_{false},
+        isRestricted_{isRestricted ? 1u : 0u},
         inodeNumber_{number} {
-    XCHECK_EQ(m, m & 0x3fffffff);
+    XCHECK_EQ(m, m & 0x1fffffff);
     XDCHECK(number.hasValue());
   }
 
@@ -196,9 +198,23 @@ class DirEntry {
    */
   [[nodiscard]] InodeBase* clearInode();
 
+  bool isRestricted() const {
+    return isRestricted_;
+  }
+
+  /**
+   * Updates the parent's cached prediction after a child Tree fetch reveals
+   * server-side ACL denial. Diverges from TreeEntry::isRestricted because that
+   * is a static annotation set when the parent tree is built, while this
+   * reflects the live fetch outcome (Tree::isRestricted) discovered later.
+   */
+  void setRestricted(bool isRestricted) {
+    isRestricted_ = isRestricted ? 1u : 0u;
+  }
+
  private:
   /**
-   * The initial entry type for this entry. Two bits are borrowed from the top
+   * The initial entry type for this entry. Three bits are borrowed from the top
    * so the entire struct fits in four words.
    *
    * TODO: This field is not updated when an inode's mode bits are changed.
@@ -206,7 +222,7 @@ class DirEntry {
    * Overlay Dir storage. After the InodeMetadataTable is in use for a while,
    * this should be replaced with dtype_t and the bitfields can go away.
    */
-  uint32_t initialMode_ : 30;
+  uint32_t initialMode_ : 29;
 
   /**
    * Whether the id_ field matches the contents from source control. If
@@ -219,6 +235,11 @@ class DirEntry {
    * Synonymous with the inode being "loaded".
    */
   uint32_t hasInodePointer_ : 1;
+
+  /**
+   * Whether this entry is restricted by ACLs.
+   */
+  uint32_t isRestricted_ : 1;
 
   /**
    * If the entry is not materialized, this contains the id

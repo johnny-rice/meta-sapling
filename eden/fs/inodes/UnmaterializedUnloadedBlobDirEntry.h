@@ -34,7 +34,8 @@ class UnmaterializedUnloadedBlobDirEntry {
   explicit UnmaterializedUnloadedBlobDirEntry(const DirEntry& entry)
       : objectId_(entry.getObjectId()),
         dtype_(entry.getDtype()),
-        initialMode_(entry.getInitialMode()) {}
+        initialMode_(entry.getInitialMode()),
+        isRestricted_(entry.isRestricted()) {}
 
   UnmaterializedUnloadedBlobDirEntry(
       const UnmaterializedUnloadedBlobDirEntry&) = default;
@@ -65,10 +66,15 @@ class UnmaterializedUnloadedBlobDirEntry {
     return initialMode_;
   }
 
+  bool isRestricted() const {
+    return isRestricted_;
+  }
+
  private:
   ObjectId objectId_;
   dtype_t dtype_;
   mode_t initialMode_;
+  bool isRestricted_ = false;
 };
 
 } // namespace facebook::eden
