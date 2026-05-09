@@ -253,6 +253,11 @@ pub(crate) mod ffi {
         error: UniquePtr<SaplingBackingStoreError>,
     }
 
+    pub struct CheckPermissionResult {
+        has_access: bool,
+        error: UniquePtr<SaplingBackingStoreError>,
+    }
+
     extern "Rust" {
         type BackingStore;
 
@@ -333,6 +338,11 @@ pub(crate) mod ffi {
             suffixes: Vec<String>,
             prefixes: Vec<String>,
         ) -> GetGlobFilesResult;
+
+        pub fn sapling_backingstore_check_permission(
+            store: &BackingStore,
+            manifest_id: &[u8],
+        ) -> CheckPermissionResult;
 
         pub fn sapling_backingstore_witness_file_read(
             store: &BackingStore,
@@ -819,6 +829,23 @@ pub fn sapling_backingstore_get_glob_files(
         files
     }), replace_none: SharedPtr::null());
     ffi::GetGlobFilesResult { data, error }
+}
+
+pub fn sapling_backingstore_check_permission(
+    store: &BackingStore,
+    manifest_id: &[u8],
+) -> ffi::CheckPermissionResult {
+    let res = store.check_permission(manifest_id);
+    match res {
+        Ok(has_access) => ffi::CheckPermissionResult {
+            has_access,
+            error: UniquePtr::null(),
+        },
+        Err(e) => ffi::CheckPermissionResult {
+            has_access: false,
+            error: into_backingstore_err(e),
+        },
+    }
 }
 
 pub fn sapling_backingstore_witness_file_read(

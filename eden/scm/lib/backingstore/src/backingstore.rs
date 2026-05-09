@@ -425,6 +425,30 @@ impl BackingStore {
     }
 
     #[instrument(level = "trace", skip(self))]
+    pub fn check_permission(&self, manifest_id: &[u8]) -> Result<bool> {
+        use edenapi::types::CheckManifestPermissionRequest;
+
+        let id = HgId::from_slice(manifest_id)?;
+        let request = CheckManifestPermissionRequest {
+            manifest_ids: vec![id],
+        };
+        let response = BlockingResponse::from_async(
+            self.maybe_reload()
+                .repo
+                .eden_api()
+                .map_err(|err| err.tag_network())?
+                .check_manifest_permission(request),
+        )?;
+        for entry in response.entries {
+            if entry.manifest_id == id {
+                return Ok(entry.has_access);
+            }
+        }
+        // If no response for our ID, default to allowing access (fail-open)
+        Ok(true)
+    }
+
+    #[instrument(level = "trace", skip(self))]
     pub fn witness_file_read(&self, path: &RepoPath, local: bool, pid: u32) {
         let inner = self.inner.load();
 
