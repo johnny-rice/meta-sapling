@@ -18,7 +18,8 @@ enum class BackingStoreErrorKind : uint8_t {
   Generic,
   Network,
   IO,
-  DataCorruption
+  DataCorruption,
+  PermissionDenied
 };
 
 class SaplingBackingStoreError : public std::runtime_error {

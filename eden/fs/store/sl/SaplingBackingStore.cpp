@@ -1373,6 +1373,12 @@ folly::Try<TreePtr> SaplingBackingStore::getTreeRemote(
       sapling::FetchMode::RemoteOnly /*, sapling::ClientRequestInfo(context)*/);
 }
 
+TreePtr SaplingBackingStore::makeRestrictedTree(ObjectId id) const {
+  XLOGF(DBG7, "Creating restricted tree for path ACL restriction: {}", id);
+  return std::make_shared<Tree>(
+      Tree::Restricted{}, Tree::container{caseSensitive_}, std::move(id));
+}
+
 folly::Try<facebook::eden::TreePtr> SaplingBackingStore::getNativeTree(
     SlOidView slOid,
     const ObjectFetchContextPtr& context,
@@ -1391,6 +1397,10 @@ folly::Try<facebook::eden::TreePtr> SaplingBackingStore::getNativeTree(
         fetch_mode);
 
     if (result.error != nullptr) {
+      if (result.error->kind() ==
+          sapling::BackingStoreErrorKind::PermissionDenied) {
+        return makeRestrictedTree(ObjectId{slOid.node().getBytes()});
+      }
       throw std::move(*result.error);
     }
 

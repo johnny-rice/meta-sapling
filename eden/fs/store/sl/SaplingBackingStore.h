@@ -676,6 +676,8 @@ class SaplingBackingStore final
       RequestMetricsScope::RequestStage stage,
       SaplingImportObject object) const;
 
+  TreePtr makeRestrictedTree(ObjectId id) const;
+
   /**
    * Gets the watches timing pending `object` imports
    *   ex. SaplingBackingStore::getPendingImportWatches(

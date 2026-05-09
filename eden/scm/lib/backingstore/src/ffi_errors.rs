@@ -59,12 +59,14 @@ fn extract_remote_api_error(err: &SaplingRemoteApiError) -> (BackingStoreErrorKi
         | SaplingRemoteApiError::IncompleteResponse(_)
         | SaplingRemoteApiError::ParseResponse(_) => (BackingStoreErrorKind::Network, None),
         SaplingRemoteApiError::RequestSerializationFailed(_) => (BackingStoreErrorKind::IO, None),
+        SaplingRemoteApiError::PermissionDenied(_) => {
+            (BackingStoreErrorKind::PermissionDenied, None)
+        }
         SaplingRemoteApiError::BadConfig(_)
         | SaplingRemoteApiError::InvalidUrl(_)
         | SaplingRemoteApiError::MissingCerts(_)
         | SaplingRemoteApiError::NotSupported
         | SaplingRemoteApiError::WireToApiConversionFailed(_)
-        | SaplingRemoteApiError::PermissionDenied(_)
         | SaplingRemoteApiError::Other(_) => (BackingStoreErrorKind::Generic, None),
     }
 }
@@ -168,6 +170,12 @@ mod tests {
                 SaplingRemoteApiError::Http(HttpClientError::Curl(curl::Error::new(7))),
                 BackingStoreErrorKind::Network,
                 Some(7),
+            ),
+            (
+                "PermissionDenied",
+                SaplingRemoteApiError::PermissionDenied("access denied".to_string()),
+                BackingStoreErrorKind::PermissionDenied,
+                None,
             ),
         ];
 

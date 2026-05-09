@@ -13,6 +13,19 @@
 
 namespace facebook::eden {
 
+TreePtr Tree::withNewId(container entries, ObjectId newId) const {
+  if (isRestricted_) {
+    return std::make_shared<const Tree>(
+        Restricted{}, std::move(entries), std::move(newId));
+  }
+  return std::make_shared<const Tree>(
+      std::move(newId), std::move(entries), auxData_);
+}
+
+TreePtr Tree::withNewId(ObjectId newId) const {
+  return withNewId(entries_, std::move(newId));
+}
+
 size_t Tree::getSizeBytes() const {
   // TODO: we should consider using a standard memory framework across
   // eden for this type of thing. D17174143 is one such idea.

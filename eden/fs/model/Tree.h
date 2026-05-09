@@ -46,6 +46,18 @@ class Tree {
         entries_{std::move(entries)},
         auxData_(std::move(auxData)) {}
 
+  /**
+   * Construct a restricted tree. This is an empty tree that indicates the
+   * server denied access to its contents via ACL.
+   */
+  struct Restricted {};
+  explicit Tree(Restricted, container entries, ObjectId id)
+      : id_{std::move(id)}, entries_{std::move(entries)}, isRestricted_{true} {}
+
+  TreePtr withNewId(container entries, ObjectId newId) const;
+
+  TreePtr withNewId(ObjectId newId) const;
+
   const ObjectId& getObjectId() const {
     return id_;
   }
@@ -98,12 +110,21 @@ class Tree {
     return entries_.getCaseSensitivity();
   }
 
+  /**
+   * Returns true if this tree represents a directory the server denied
+   * access to via ACL restrictions.
+   */
+  bool isRestricted() const {
+    return isRestricted_;
+  }
+
  private:
   friend bool operator==(const Tree& tree1, const Tree& tree2);
 
   ObjectId id_;
   container entries_;
   TreeAuxDataPtr auxData_;
+  bool isRestricted_{false};
 };
 
 } // namespace facebook::eden

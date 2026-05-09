@@ -82,4 +82,34 @@ TEST(Tree, testSize) {
   EXPECT_LE(numEntries * entrySize + Hash20::RAW_SIZE, tree.getSizeBytes());
 }
 
+TEST(Tree, isRestrictedDefaultsFalse) {
+  Tree::container entries{CaseSensitivity::Sensitive};
+  auto tree = std::make_shared<Tree>(std::move(entries), ObjectId("abc123"));
+  EXPECT_FALSE(tree->isRestricted());
+}
+
+TEST(Tree, restrictedConstructor) {
+  Tree::container entries{CaseSensitivity::Sensitive};
+  auto tree = std::make_shared<Tree>(
+      Tree::Restricted{}, std::move(entries), ObjectId("abc123"));
+  EXPECT_TRUE(tree->isRestricted());
+  EXPECT_EQ(tree->size(), 0);
+}
+
+TEST(Tree, withNewIdPreservesRestricted) {
+  Tree::container entries{CaseSensitivity::Sensitive};
+  Tree source{Tree::Restricted{}, std::move(entries), ObjectId("abc123")};
+  auto copy = source.withNewId(ObjectId("def456"));
+  EXPECT_TRUE(copy->isRestricted());
+  EXPECT_EQ(copy->getObjectId(), ObjectId("def456"));
+}
+
+TEST(Tree, withNewIdPreservesUnrestricted) {
+  Tree::container entries{CaseSensitivity::Sensitive};
+  Tree source{std::move(entries), ObjectId("abc123")};
+  auto copy = source.withNewId(ObjectId("def456"));
+  EXPECT_FALSE(copy->isRestricted());
+  EXPECT_EQ(copy->getObjectId(), ObjectId("def456"));
+}
+
 } // namespace facebook::eden

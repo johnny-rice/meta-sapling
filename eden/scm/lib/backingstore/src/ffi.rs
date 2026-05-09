@@ -127,6 +127,7 @@ pub(crate) mod ffi {
         Network,
         IO,
         DataCorruption,
+        PermissionDenied,
     }
 
     unsafe extern "C++" {
