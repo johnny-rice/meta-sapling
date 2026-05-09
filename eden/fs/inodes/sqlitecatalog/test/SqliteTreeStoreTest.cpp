@@ -7,6 +7,7 @@
 
 #include "eden/fs/inodes/sqlitecatalog/SqliteTreeStore.h"
 
+#include <folly/Range.h>
 #include <gtest/gtest.h>
 #include <memory>
 #include <optional>
@@ -16,6 +17,7 @@
 #include "eden/fs/inodes/overlay/gen-cpp2/overlay_types.h"
 #include "eden/fs/model/Hash.h"
 #include "eden/fs/sqlite/SqliteDatabase.h"
+#include "eden/fs/sqlite/SqliteStatement.h"
 
 namespace facebook::eden {
 
@@ -33,7 +35,8 @@ class SqliteTreeStoreTest : public ::testing::Test {
   overlay::OverlayEntry makeEntry(
       std::optional<Hash20> hash = std::nullopt,
       dtype_t mode = dtype_t::Regular,
-      std::optional<InodeNumber> inode = std::nullopt) {
+      std::optional<InodeNumber> inode = std::nullopt,
+      bool isRestricted = false) {
     overlay::OverlayEntry entry;
     entry.mode() = dtype_to_mode(mode);
 
@@ -46,6 +49,8 @@ class SqliteTreeStoreTest : public ::testing::Test {
     if (hash) {
       entry.hash() = hash->toByteString();
     }
+
+    entry.isRestricted() = isRestricted;
 
     return entry;
   }
@@ -65,6 +70,7 @@ void expect_entry(
   // We use `value_unchecked()` here since it will not throw an exception if
   // the value doesn't exist.
   EXPECT_EQ(lhs.hash().value_unchecked(), rhs.hash().value_unchecked());
+  EXPECT_EQ(*lhs.isRestricted(), *rhs.isRestricted());
 }
 
 void expect_entries(
@@ -274,4 +280,130 @@ TEST_F(SqliteTreeStoreTest, testRenameChild) {
     expect_entry(it->second, entry);
   }
 }
+
+TEST_F(SqliteTreeStoreTest, testIsRestrictedRoundTrip) {
+  overlay::OverlayDir dir;
+  dir.entries()->emplace(
+      std::make_pair(
+          "restricted_dir",
+          makeEntry(
+              Hash20{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+              dtype_t::Dir,
+              std::nullopt,
+              true)));
+  dir.entries()->emplace(
+      std::make_pair(
+          "normal_dir",
+          makeEntry(
+              Hash20{"cccccccccccccccccccccccccccccccccccccccc"},
+              dtype_t::Dir)));
+
+  store_->saveTree(kRootNodeId, overlay::OverlayDir{dir});
+  auto restored = store_->loadTree(kRootNodeId);
+  ASSERT_EQ(dir.entries()->size(), restored.entries()->size());
+  expect_entries(*dir.entries(), *restored.entries());
+
+  // Explicitly verify the restricted flags
+  EXPECT_TRUE(*restored.entries()->at("restricted_dir").isRestricted());
+  EXPECT_FALSE(*restored.entries()->at("normal_dir").isRestricted());
+}
+
+TEST_F(SqliteTreeStoreTest, testMigrationFromV1) {
+  // Create a fresh in-memory database with the v1 schema (no is_restricted)
+  auto db = std::make_unique<SqliteDatabase>(SqliteDatabase::inMemory);
+  db->transaction([&](auto& txn) {
+    SqliteStatement(
+        txn,
+        "CREATE TABLE IF NOT EXISTS entries"
+        "("
+        "  parent INTEGER NOT NULL,"
+        "  name STRING NOT NULL,"
+        "  dtype INTEGER NOT NULL,"
+        "  inode INTEGER NOT NULL,"
+        "  sequence_id INTEGER NOT NULL,"
+        "  hash BLOB,"
+        "  PRIMARY KEY (parent, name)"
+        ") WITHOUT ROWID")
+        .step();
+    SqliteStatement(txn, "PRAGMA user_version = 1").step();
+    // Insert a v1 row (6 columns, no is_restricted)
+    auto insertStmt = SqliteStatement(
+        txn,
+        "INSERT INTO entries (parent, name, dtype, inode, sequence_id, hash)"
+        " VALUES (?, ?, ?, ?, ?, ?)");
+    insertStmt.bind(1, kRootNodeId.get());
+    insertStmt.bind(2, folly::StringPiece{"old_entry"});
+    insertStmt.bind(3, static_cast<uint32_t>(dtype_t::Dir));
+    insertStmt.bind(4, static_cast<uint64_t>(2));
+    insertStmt.bind(5, static_cast<uint64_t>(0));
+    insertStmt.bind(6, folly::ByteRange{});
+    insertStmt.step();
+  });
+
+  // Construct SqliteTreeStore from the v1 database — triggers migration
+  auto migrated_store = std::make_unique<SqliteTreeStore>(std::move(db));
+  migrated_store->createTableIfNonExisting();
+  migrated_store->loadCounters();
+
+  // Verify the migrated row loads with isRestricted = false
+  auto loaded = migrated_store->loadTree(kRootNodeId);
+  ASSERT_EQ(loaded.entries()->size(), 1);
+  EXPECT_FALSE(*loaded.entries()->at("old_entry").isRestricted());
+
+  // Verify new restricted entries work on the migrated schema
+  migrated_store->addChild(
+      kRootNodeId,
+      "new_restricted"_pc,
+      makeEntry(std::nullopt, dtype_t::Dir, InodeNumber{3}, true));
+
+  auto reloaded = migrated_store->loadTree(kRootNodeId);
+  ASSERT_EQ(reloaded.entries()->size(), 2);
+  EXPECT_TRUE(*reloaded.entries()->at("new_restricted").isRestricted());
+  EXPECT_FALSE(*reloaded.entries()->at("old_entry").isRestricted());
+}
+
+TEST_F(SqliteTreeStoreTest, testMigrationFromPartiallyAppliedV1) {
+  auto db = std::make_unique<SqliteDatabase>(SqliteDatabase::inMemory);
+  db->transaction([&](auto& txn) {
+    SqliteStatement(
+        txn,
+        "CREATE TABLE IF NOT EXISTS entries"
+        "("
+        "  parent INTEGER NOT NULL,"
+        "  name STRING NOT NULL,"
+        "  dtype INTEGER NOT NULL,"
+        "  inode INTEGER NOT NULL,"
+        "  sequence_id INTEGER NOT NULL,"
+        "  hash BLOB,"
+        "  is_restricted INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY (parent, name)"
+        ") WITHOUT ROWID")
+        .step();
+    SqliteStatement(txn, "PRAGMA user_version = 1").step();
+
+    auto insertStmt = SqliteStatement(
+        txn,
+        "INSERT INTO entries "
+        "(parent, name, dtype, inode, sequence_id, hash, is_restricted)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)");
+    insertStmt.bind(1, kRootNodeId.get());
+    insertStmt.bind(2, folly::StringPiece{"restricted_entry"});
+    insertStmt.bind(3, static_cast<uint32_t>(dtype_t::Dir));
+    insertStmt.bind(4, static_cast<uint64_t>(2));
+    insertStmt.bind(5, static_cast<uint64_t>(0));
+    insertStmt.bind(6, folly::ByteRange{});
+    insertStmt.bind(7, static_cast<uint64_t>(1));
+    insertStmt.step();
+  });
+
+  auto migratedStore = std::make_unique<SqliteTreeStore>(std::move(db));
+  migratedStore->createTableIfNonExisting();
+  migratedStore->loadCounters();
+
+  auto loaded = migratedStore->loadTree(kRootNodeId);
+  ASSERT_EQ(loaded.entries()->size(), 1);
+  const auto& entry = loaded.entries()->at("restricted_entry");
+  EXPECT_TRUE(*entry.isRestricted());
+}
+
 } // namespace facebook::eden

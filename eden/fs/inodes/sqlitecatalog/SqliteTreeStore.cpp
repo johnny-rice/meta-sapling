@@ -36,16 +36,52 @@ constexpr auto kInitialNodeId = kRootNodeId.getRawValue() + 1;
 
 // Schema version of the SQLite database, every time we changes the schema we
 // must bump this number.
-constexpr uint32_t kSchemaVersion = 1;
+constexpr uint32_t kSchemaVersion = 2;
 
 // Maximum number of values when we do batch insertion
 constexpr size_t kBatchInsertSize = 8;
+
+bool tableHasColumn(
+    LockedSqliteConnection& txn,
+    folly::StringPiece table,
+    folly::StringPiece column) {
+  auto stmt = SqliteStatement(txn, "PRAGMA table_info(", table, ")");
+  while (stmt.step()) {
+    if (stmt.columnBlob(1) == column) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void addColumnIfMissing(
+    LockedSqliteConnection& txn,
+    folly::StringPiece table,
+    folly::StringPiece column,
+    folly::StringPiece columnDefinition) {
+  if (tableHasColumn(txn, table, column)) {
+    return;
+  }
+
+  try {
+    SqliteStatement(
+        txn, "ALTER TABLE ", table, " ADD COLUMN ", columnDefinition)
+        .step();
+  } catch (const std::runtime_error& ex) {
+    auto duplicateColumn =
+        folly::to<std::string>("duplicate column name: ", column);
+    if (std::string{ex.what()}.find(duplicateColumn) != std::string::npos) {
+      return;
+    }
+    throw;
+  }
+}
 
 } // namespace
 
 struct SqliteTreeStore::StatementCache {
   explicit StatementCache(LockedSqliteConnection& db)
-      : selectTree{db, "SELECT name, dtype, inode, hash FROM ", kEntryTable, " WHERE parent = ? ORDER BY name"},
+      : selectTree{db, "SELECT name, dtype, inode, hash, is_restricted FROM ", kEntryTable, " WHERE parent = ? ORDER BY name"},
         selectAllParents{db, "SELECT DISTINCT parent FROM ", kEntryTable},
         countChildren{
             db,
@@ -58,8 +94,8 @@ struct SqliteTreeStore::StatementCache {
             db,
             "INSERT INTO ",
             kEntryTable,
-            " (parent, name, dtype, inode, sequence_id, hash) ",
-            " VALUES (?, ?, ?, ?, ?, ?)"},
+            " (parent, name, dtype, inode, sequence_id, hash, is_restricted) ",
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"},
         deleteChild{
             db,
             "DELETE FROM ",
@@ -96,11 +132,11 @@ struct SqliteTreeStore::StatementCache {
   PersistentSqliteStatement makeBatchInsert(
       LockedSqliteConnection& db,
       size_t size) {
-    constexpr folly::StringPiece values_fmt = "(?,?,?,?,?,?)";
+    constexpr folly::StringPiece values_fmt = "(?,?,?,?,?,?,?)";
     fmt::memory_buffer stmt_buffer;
     fmt::format_to(
         std::back_inserter(stmt_buffer),
-        "INSERT INTO {} (parent, name, dtype, inode, sequence_id, hash) VALUES ",
+        "INSERT INTO {} (parent, name, dtype, inode, sequence_id, hash, is_restricted) VALUES ",
         kEntryTable);
 
     for (size_t i = 0; i < size; i++) {
@@ -244,8 +280,21 @@ std::unique_ptr<SqliteDatabase> SqliteTreeStore::takeDatabase() {
 }
 
 void SqliteTreeStore::createTableIfNonExisting() {
-  // TODO: check `user_version` and migrate schema if necessary
   db_->transaction([&](auto& txn) {
+    // Check current schema version and migrate if necessary
+    {
+      auto versionStmt = SqliteStatement(txn, "PRAGMA user_version");
+      versionStmt.step();
+      auto version = versionStmt.columnUint64(0);
+      if (version == 1) {
+        addColumnIfMissing(
+            txn,
+            kEntryTable,
+            "is_restricted",
+            "is_restricted INTEGER NOT NULL DEFAULT 0");
+      }
+    }
+
     // `name` column in this table being `STRING` data type essentially capped
     // our ability to support non-UTF-8 path. Currently we do enforce this rule
     // elsewhere but moving forward if we ever need to support non-UTF-8 path we
@@ -262,6 +311,7 @@ void SqliteTreeStore::createTableIfNonExisting() {
     inode INTEGER NOT NULL,
     sequence_id INTEGER NOT NULL,
     hash BLOB,
+    is_restricted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (parent, name)
 ) WITHOUT ROWID;
   )")
@@ -425,6 +475,7 @@ overlay::OverlayDir SqliteTreeStore::loadTree(InodeNumber inode) {
           dtype_to_mode(static_cast<dtype_t>(query->columnUint64(1)));
       entry.inodeNumber() = query->columnUint64(2);
       entry.hash() = query->columnBlob(3).toString();
+      entry.isRestricted() = query->columnUint64(4) != 0;
       dir.entries_ref()->emplace(std::make_pair(name, entry));
     }
   });
@@ -447,6 +498,7 @@ overlay::OverlayDir SqliteTreeStore::loadAndRemoveTree(InodeNumber inode) {
           dtype_to_mode(static_cast<dtype_t>(query->columnUint64(1)));
       entry.inodeNumber() = query->columnUint64(2);
       entry.hash() = query->columnBlob(3).toString();
+      entry.isRestricted() = query->columnUint64(4) != 0;
       dir.entries_ref()->emplace(std::make_pair(name, entry));
     }
 
@@ -570,12 +622,13 @@ void SqliteTreeStore::insertInodeEntry(
         entryHash->size()};
   }
 
-  auto start = index * 6; // Number of columns
+  auto start = index * 7; // Number of columns
   inserts.bind(start + 1, parent.get());
   inserts.bind(start + 2, name.view());
   inserts.bind(start + 3, dtype);
   inserts.bind(start + 4, inode);
   inserts.bind(start + 5, nextEntryId_++);
   inserts.bind(start + 6, hash);
+  inserts.bind(start + 7, static_cast<uint32_t>(*entry.isRestricted()));
 }
 } // namespace facebook::eden

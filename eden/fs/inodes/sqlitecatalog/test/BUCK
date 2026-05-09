@@ -37,5 +37,6 @@ cpp_unittest(
         "//eden/fs/inodes/sqlitecatalog:sqlitetreestore",
         "//eden/fs/model:model",
         "//eden/fs/sqlite:sqlite",
+        "//folly:range",
     ],
 )
