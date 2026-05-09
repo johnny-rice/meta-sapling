@@ -337,18 +337,13 @@ impl SaplingRemoteApi for EagerRepo {
                         let augmented_tree_with_digest =
                             AugmentedTreeWithDigest::try_deserialize(std::io::Cursor::new(tree))?;
 
-                        // Check if the tree has a .slacl file and return PermissionDenied if so
-                        if augmented_tree_with_digest
-                            .augmented_tree
-                            .entries
-                            .iter()
-                            .any(|(path, _)| path.as_str() == ".slacl")
-                        {
+                        if self.enforce_server_acls() && self.tree_has_slacl(key.hgid)? {
                             values.push(Ok(Err(SaplingRemoteApiServerError {
                                 key: Some(key.clone()),
                                 err: SaplingRemoteApiServerErrorKind::PermissionDenied {
                                     tree_id: key.hgid,
-                                    request_acl: "some-acl".to_string(),
+                                    request_acl: crate::eager_repo::EAGER_PLACEHOLDER_ACL
+                                        .to_string(),
                                 },
                             })));
                             continue;
@@ -437,7 +432,6 @@ impl SaplingRemoteApi for EagerRepo {
                                     file_metadata: Some(FileMetadata::from(aux_data)),
                                 })));
                             }
-                            // The client currently ignores directory metadata, so don't bother.
                             Flag::Directory => {}
                         }
                     }
@@ -1285,26 +1279,13 @@ impl SaplingRemoteApi for EagerRepo {
 
         let mut values = Vec::new();
         for manifest_id in request.manifest_ids {
-            let tree = self
-                .get_augmented_tree_blob_with_digest_for_api(
-                    manifest_id,
-                    "check_manifest_permission",
-                )
-                .await?;
-            let augmented_tree_with_digest =
-                AugmentedTreeWithDigest::try_deserialize(std::io::Cursor::new(tree))?;
-
-            let has_slacl = augmented_tree_with_digest
-                .augmented_tree
-                .entries
-                .iter()
-                .any(|(path, _)| path.as_str() == ".slacl");
+            let has_slacl = self.tree_has_slacl(manifest_id)?;
 
             values.push(Ok(CheckManifestPermissionResponse {
                 manifest_id,
                 has_access: !has_slacl,
                 request_acl: if has_slacl {
-                    Some("some-acl".to_string())
+                    Some(crate::eager_repo::EAGER_PLACEHOLDER_ACL.to_string())
                 } else {
                     None
                 },
@@ -1797,6 +1778,10 @@ pub fn edenapi_from_config(
             );
             if let Some(path) = EagerRepo::url_to_dir(&url) {
                 let repo = EagerRepo::open(&path).map_err(edenapi::SaplingRemoteApiError::Other)?;
+                let enforce_server_acls = config
+                    .get_or_default::<bool>("slacl", "server-acl-enforcement")
+                    .map_err(|err| edenapi::SaplingRemoteApiError::Other(err.into()))?;
+                repo.set_enforce_server_acls(enforce_server_acls);
                 return Ok(Some(Arc::new(repo)));
             }
         }

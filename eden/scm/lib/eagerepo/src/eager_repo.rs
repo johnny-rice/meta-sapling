@@ -18,6 +18,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -31,7 +33,9 @@ use dag::ops::DagAddHeads;
 use dag::ops::DagPersistent;
 use eagerepo_trait::EagerRepoExtension;
 use format_util::commit_text_to_root_tree_id;
+use format_util::git_sha1_deserialize;
 use format_util::git_sha1_serialize;
+use format_util::hg_sha1_deserialize;
 use format_util::hg_sha1_serialize;
 use futures::lock::Mutex;
 use futures::lock::MutexGuard;
@@ -72,6 +76,9 @@ const HG_PARENTS_LEN: usize = HgId::len() * 2;
 const HG_LEN: usize = HgId::len();
 const METALOG_DIR: &str = "metalog";
 
+/// Test-only ACL name used when eagerepo simulates PermissionDenied.
+pub(crate) const EAGER_PLACEHOLDER_ACL: &str = "some-acl";
+
 /// Non-lazy, pure Rust, local repo implementation.
 ///
 /// Mainly useful as a simple "server repo" in tests that can replace ssh remote
@@ -107,6 +114,7 @@ pub struct EagerRepo {
     store_dir: PathBuf,
     pub(crate) mut_store: Mutex<MutationStore>,
     pub(crate) ext: OnceLock<Arc<dyn EagerRepoExtension>>,
+    enforce_server_acls: AtomicBool,
 }
 
 /// Storage used by `EagerRepo`. See [`Id20Store`] for details.
@@ -150,6 +158,32 @@ impl EagerRepoStore {
     /// Read SHA1 blob from zstore for augmented data.
     pub fn get_augmented_blob(&self, id: Id20) -> Result<Option<Bytes>> {
         self.get_sha1_blob(augmented_id(id))
+    }
+
+    /// Check whether a tree contains `.slacl`.
+    pub(crate) fn tree_has_slacl(&self, tree_id: Id20) -> Result<bool> {
+        let tree_data = match self.get_sha1_blob(tree_id)? {
+            None => return Ok(false),
+            Some(data) => data,
+        };
+        let format = self.format();
+        let data = match format {
+            SerializationFormat::Hg => {
+                let (body, _, _) = hg_sha1_deserialize(&tree_data)?;
+                tree_data.slice_to_bytes(body)
+            }
+            SerializationFormat::Git => {
+                let (body, _) = git_sha1_deserialize(&tree_data)?;
+                tree_data.slice_to_bytes(body)
+            }
+        };
+        let tree_entry = manifest_tree::TreeEntry(data, format);
+        for child in tree_entry.elements() {
+            if child?.component.as_str() == ".slacl" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Check files and trees referenced by the `id` are present.
@@ -254,6 +288,7 @@ impl EagerRepo {
             store_dir,
             mut_store: Mutex::new(mut_store),
             ext: Default::default(),
+            enforce_server_acls: AtomicBool::new(true),
         };
 
         // If EagerRepoStore picks up an extension, also enable it for the EagerRepo.
@@ -559,21 +594,16 @@ impl EagerRepo {
         }
     }
 
-    /// Check if a tree contains a .slacl file
-    fn tree_has_slacl(&self, tree_id: Id20) -> Result<bool> {
-        let tree_data = match self.get_sha1_blob(tree_id)? {
-            None => return Ok(false),
-            Some(data) => data,
-        };
-        let (_, data) = Self::extract_parents_from_tree_data_hg(tree_data)?;
-        let tree_entry = manifest_tree::TreeEntry(data, SerializationFormat::Hg);
-        for child in tree_entry.elements() {
-            let child = child?;
-            if child.component.as_str() == ".slacl" {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+    pub(crate) fn tree_has_slacl(&self, tree_id: Id20) -> Result<bool> {
+        self.store.tree_has_slacl(tree_id)
+    }
+
+    pub fn set_enforce_server_acls(&self, val: bool) {
+        self.enforce_server_acls.store(val, Ordering::Relaxed);
+    }
+
+    pub fn enforce_server_acls(&self) -> bool {
+        self.enforce_server_acls.load(Ordering::Relaxed)
     }
 
     /// Insert a commit. Return the commit hash.
@@ -846,6 +876,17 @@ mod tests {
 
         let repo2 = EagerRepo::open(dir).unwrap();
         assert_eq!(repo2.get_sha1_blob(id).unwrap().as_deref(), Some(text));
+    }
+
+    #[test]
+    fn test_acl_enforcement_defaults_to_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = EagerRepo::open(dir.path()).unwrap();
+
+        assert!(repo.enforce_server_acls());
+
+        repo.set_enforce_server_acls(false);
+        assert!(!repo.enforce_server_acls());
     }
 
     #[tokio::test]

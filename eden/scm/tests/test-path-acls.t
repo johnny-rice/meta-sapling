@@ -8,11 +8,12 @@
   >    # A/restricted/secret.txt = secret content
   > EOS
 
-  $ cd
+  $ sl clone --config clone.use-rust=True --config format.use-eager-repo=false --config format.use-remotefilelog=true --config remotefilelog.reponame=client -q "test:server" "$TESTTMP/client"
+  $ cd "$TESTTMP/client"
   $ setconfig scmstore.fetch-tree-aux-data=true
   $ setconfig scmstore.tree-metadata-mode=always
   $ setconfig experimental.restricted-tree-mode=enforced
-  $ newclientrepo client server
+  $ setconfig slacl.server-acl-enforcement=true
 
   $ sl debugmanifestdirs -qr $A
   19d1f9c4aa6e6b299fa6a863b253889df872ae0f restricted
