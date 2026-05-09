@@ -933,9 +933,7 @@ TEST(TreeInode, buildDirFromTreePropagatesIsRestricted) {
   auto restrictedIter = contents->entries.find("restricted_dir"_pc);
   ASSERT_NE(restrictedIter, contents->entries.end());
   EXPECT_TRUE(restrictedIter->second.isDirectory());
-  // FIXME: isRestricted not yet propagated from TreeEntry to DirEntry in
-  // buildDirFromTree — should be EXPECT_TRUE once propagation is implemented
-  EXPECT_FALSE(restrictedIter->second.isRestricted());
+  EXPECT_TRUE(restrictedIter->second.isRestricted());
 
   auto normalIter = contents->entries.find("normal_dir"_pc);
   ASSERT_NE(normalIter, contents->entries.end());

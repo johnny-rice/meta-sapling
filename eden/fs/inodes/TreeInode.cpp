@@ -1336,7 +1336,8 @@ DirContents TreeInode::buildDirFromTree(
         DirEntry{
             modeFromTreeEntryType(treeEntry.second.getType()),
             InodeNumber{startInode.get() + inodeOffset++},
-            treeEntry.second.getObjectId()});
+            treeEntry.second.getObjectId(),
+            treeEntry.second.isRestricted()});
   }
 
   return DirContents{std::move(entries), caseSensitive};
