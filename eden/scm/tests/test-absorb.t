@@ -598,3 +598,62 @@
   $ HGPLAIN=1 sl absorb -qa -d 2022-07-12T00:00:00
   $ sl log -r . -T '{date}\n'
   1657584000.00
+
+# Test --immutable
+
+  $ newrepo
+  $ drawdag << 'EOS'
+  > C  # C/file=11\n22\n33\n
+  > |
+  > B  # B/file=11\n22\n
+  > |
+  > A  # A/file=11\n
+  > EOS
+
+  $ sl go -q $C
+  $ seq 3 > file
+  $ sl absorb -n file
+  showing changes for file
+          @@ -0,3 +0,3 @@
+  42db4fa -11
+  ac0e21d -22
+  753aab2 -33
+  42db4fa +1
+  ac0e21d +2
+  753aab2 +3
+  
+  3 changesets affected
+  753aab2 C
+  ac0e21d B
+  42db4fa A
+
+  $ sl absorb -n file --immutable 'desc(B)'
+  showing changes for file
+          @@ -0,3 +0,3 @@
+          -11
+          -22
+  753aab2 -33
+          +1
+          +2
+  753aab2 +3
+  
+  1 changeset affected
+  753aab2 C
+
+  $ sl absorb -n file -P 'desc(A)'
+  showing changes for file
+          @@ -0,3 +0,3 @@
+          -11
+  ac0e21d -22
+  753aab2 -33
+          +1
+  ac0e21d +2
+  753aab2 +3
+  
+  2 changesets affected
+  753aab2 C
+  ac0e21d B
+
+  $ sl absorb -n file -P 'desc(A)' -P 'desc(C)'
+  abort: no changeset to change
+  [255]
