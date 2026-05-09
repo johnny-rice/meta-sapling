@@ -56,7 +56,7 @@ cmdworktree = { version = "0.1.0", path = "commands/cmdworktree", optional = tru
 ctrlc = { version = "3.5.2", features = ["termination"] }
 flate2 = { version = "1.0.33", features = ["rust_backend"], default-features = false }
 hostname = "0.4.2"
-libc = "0.2.183"
+libc = "0.2.186"
 parking_lot = { version = "0.12.1", features = ["arc_lock", "send_guard"] }
 pycheckout = { version = "0.1.0", path = "../../saplingnative/bindings/modules/pycheckout" }
 pytracing = { version = "0.1.0", path = "../../saplingnative/bindings/modules/pytracing", default-features = false }

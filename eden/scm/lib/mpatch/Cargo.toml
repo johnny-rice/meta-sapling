@@ -13,5 +13,5 @@ license = "MIT"
 name = "mpatch"
 
 [dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 sapling-mpatch-sys = { version = "0.1.0", path = "../mpatch-sys" }

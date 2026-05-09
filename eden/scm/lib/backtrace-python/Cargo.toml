@@ -14,7 +14,7 @@ license = "MIT"
 name = "backtrace_python"
 
 [dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 sapling-backtrace-ext = { version = "0.1.0", path = "../backtrace-ext" }
 sapling-evalframe-sys = { version = "0.1.0", path = "evalframe-sys" }
 

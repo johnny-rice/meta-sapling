@@ -13,7 +13,7 @@ license = "MIT"
 name = "procinfo"
 
 [dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]

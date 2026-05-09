@@ -9,7 +9,7 @@ edition = "2024"
 anyhow = "1.0.102"
 bindings = { version = "0.1.0", path = "../../../saplingnative/bindings", default-features = false }
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
-libc = "0.2.183"
+libc = "0.2.186"
 pycontext = { version = "0.1.0", path = "../../../saplingnative/bindings/modules/pycontext" }
 pyhook = { version = "0.1.0", path = "../../../saplingnative/bindings/modules/pyhook" }
 pyio = { version = "0.1.0", path = "../../../saplingnative/bindings/modules/pyio" }

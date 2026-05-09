@@ -19,5 +19,5 @@ path = "src/bin/offset-codegen.rs"
 [dependencies]
 backtrace = "0.3"
 cpython = { version = "0.7.2", features = ["python3-sys"], default-features = false }
-libc = "0.2.183"
+libc = "0.2.186"
 sapling-evalframe-sys = { version = "0.1.0", path = "../evalframe-sys" }

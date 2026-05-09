@@ -29,7 +29,7 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw
 tempfile = "3.27.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"

@@ -16,10 +16,10 @@ name = "procutil"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 once_cell = "1.21.4"

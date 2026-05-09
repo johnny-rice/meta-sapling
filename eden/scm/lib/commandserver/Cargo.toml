@@ -27,10 +27,10 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.183"
+libc = "0.2.186"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 sapling-atexit = { version = "0.1.0", path = "../util/atexit" }
