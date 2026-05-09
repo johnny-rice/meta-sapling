@@ -208,11 +208,17 @@ impl TreeStore {
         match self.get_indexedlog_entry_direct(&node)? {
             None => Ok(None),
             Some(entry) => {
-                let tree_aux = self.get_local_aux_direct(&node)?;
-                let res: Arc<ScmStoreTreeEntry> = Arc::new(
-                    LazyTree::IndexedLog(TreeEntryWithAux { entry, tree_aux }, self.format())
-                        .into(),
-                );
+                let res: Arc<ScmStoreTreeEntry> = Arc::new(ScmStoreTreeEntry {
+                    tree: LazyTree::IndexedLog(
+                        TreeEntryWithAux {
+                            entry,
+                            tree_aux: self.get_local_aux_direct(&node)?,
+                        },
+                        self.format(),
+                    ),
+                    basic_tree_entry: OnceCell::new(),
+                    acl_checker: self.create_acl_checker(),
+                });
                 Ok(Some(res))
             }
         }
