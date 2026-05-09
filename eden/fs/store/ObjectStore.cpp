@@ -222,7 +222,9 @@ ImmediateFuture<ObjectStore::GetRootTreeResult> ObjectStore::getRootTree(
               BackingStore::GetRootTreeResult result) {
             auto tree =
                 changeCaseSensitivity(std::move(result.tree), caseSensitive);
-            treeCache->insert(result.treeId, tree);
+            if (!tree->isRestricted()) {
+              treeCache->insert(result.treeId, tree);
+            }
 
             return GetRootTreeResult{
                 std::move(tree),
@@ -251,7 +253,9 @@ ObjectStore::co_getRootTree(
     auto result = co_await backingStore_->co_getRootTree(rootId, context);
     stats_->increment(&ObjectStoreStats::getRootTreeFromBackingStore);
     auto tree = changeCaseSensitivity(std::move(result.tree), caseSensitive_);
-    treeCache_->insert(result.treeId, tree);
+    if (!tree->isRestricted()) {
+      treeCache_->insert(result.treeId, tree);
+    }
     co_return GetRootTreeResult{std::move(tree), result.treeId};
   } catch (...) {
     stats_->increment(&ObjectStoreStats::getRootTreeFailed);
@@ -321,7 +325,9 @@ folly::coro::now_task<std::shared_ptr<const Tree>> ObjectStore::co_getTree(
   auto result = co_await getTreeImpl(id, fetchContext, watch);
   TaskTraceBlock block2{"ObjectStore::getTree::thenValue"};
   auto tree = changeCaseSensitivity(std::move(result.tree), caseSensitive_);
-  treeCache_->insert(tree->getObjectId(), tree);
+  if (!tree->isRestricted()) {
+    treeCache_->insert(tree->getObjectId(), tree);
+  }
   fetchContext->didFetch(ObjectFetchContext::Tree, id, result.origin);
   updateProcessFetch(*fetchContext);
   co_return tree;
