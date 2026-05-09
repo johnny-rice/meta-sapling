@@ -284,8 +284,10 @@ python_unittest(
     env = artifacts["env"],
     supports_static_listing = False,
     deps = [
+        "//eden/fs/service:thrift-python-types",
         "//eden/integration/hg/lib:testutil",
         "//eden/integration/lib:lib",
+        "//thrift/lib/python:types",
     ],
 )
 

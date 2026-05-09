@@ -13,6 +13,13 @@ import os
 import stat
 from typing import TYPE_CHECKING
 
+from eden.fs.service.eden.thrift_types import (
+    DirListAttributeDataOrError,
+    GetScmStatusParams,
+    GlobParams,
+    ReaddirParams,
+    SyncBehavior,
+)
 from eden.integration.hg.lib.hg_extension_test_base import EdenHgTestCase, hg_test
 from eden.integration.lib import hgrepo
 from eden.integration.lib.eagerrepo import EagerRepo
@@ -213,6 +220,95 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
         else:
             with open(new_file_path, "w") as f:
                 f.write("should be allowed")
+
+    async def test_glob_skips_restricted_dirs(self) -> None:
+        # FIXME(D99730326): glob does not yet filter restricted children. This
+        # commit asserts the current pre-impl behavior so the test is green
+        # at this revision:
+        #   * Client-side enforcement variants: glob returns restricted
+        #     entries (no filtering yet).
+        #   * Server-side enforcement variants: glob raises ApplicationError
+        #     because the unfiltered traversal hits a manifest the client is
+        #     not authorized to fetch.
+        # D99730326 ("Add restricted tree handling to glob traversal") will
+        # land the implementation and flip the assertion to require
+        # restricted entries to be excluded from glob results in both modes.
+        params = GlobParams(
+            mountPoint=self.mount_path_bytes,
+            globs=["**/*.txt"],
+            includeDotfiles=False,
+        )
+        if self.expect_restricted and self.enable_server_acl_enforcement:
+            # FIXME(D99730326): post-impl this should NOT raise; glob should
+            # filter restricted children before they trigger the server-side
+            # PermissionDenied.
+            from thrift.python.exceptions import ApplicationError
+
+            with self.assertRaises(ApplicationError):
+                async with self.get_async_thrift_client() as client:
+                    await client.globFiles(params)
+            return
+
+        async with self.get_async_thrift_client() as client:
+            result = await client.globFiles(params)
+
+        matching = sorted(result.matchingFiles)
+
+        self.assertIn(b"hello.txt", matching)
+        self.assertIn(b"regular/file.txt", matching)
+        self.assertIn(b"parent/normal_file.txt", matching)
+
+        restricted_files = [f for f in matching if f.startswith(b"restricted/")]
+        nested_restricted_files = [f for f in matching if b"nested_restricted/" in f]
+        if self.expect_restricted:
+            # FIXME(D99730326): post-impl this should be assertEqual([], ...).
+            self.assertGreater(len(restricted_files), 0)
+            self.assertGreater(len(nested_restricted_files), 0)
+        else:
+            self.assertGreater(len(restricted_files), 0)
+
+    async def test_status_restricted_dirs(self) -> None:
+        async with self.get_async_thrift_client() as client:
+            status = await client.getScmStatusV2(
+                GetScmStatusParams(
+                    mountPoint=self.mount_path_bytes,
+                    commit=self.initial_commit.encode(),
+                    listIgnored=False,
+                    rootIdOptions=None,
+                )
+            )
+
+        if self.expect_restricted:
+            restricted_entries = [
+                path
+                for path in status.status.entries
+                if path.startswith(b"restricted/") or b"nested_restricted/" in path
+            ]
+            self.assertEqual(restricted_entries, [])
+
+    async def test_readdir_thrift_on_restricted_dir(self) -> None:
+        async with self.get_async_thrift_client() as client:
+            result = await client.readdir(
+                ReaddirParams(
+                    mountPoint=self.mount_path_bytes,
+                    directoryPaths=[b"restricted"],
+                    sync=SyncBehavior(),
+                )
+            )
+            dir_data = result.dirLists[0]
+            if self.expect_restricted:
+                # Restricted directories should return the union's error arm.
+                self.assertEqual(DirListAttributeDataOrError.Type.error, dir_data.type)
+                err = dir_data.error
+                self.assertIsNotNone(err)
+                if err.errorCode is not None:
+                    self.assertIn(err.errorCode, [errno.EACCES, errno.EPERM])
+            else:
+                self.assertEqual(
+                    DirListAttributeDataOrError.Type.dirListAttributeData,
+                    dir_data.type,
+                )
+                self.assertIsNotNone(dir_data.dirListAttributeData)
 
 
 class _RestrictedTreeConfigOffBase(_RestrictedTreeTestBase, metaclass=abc.ABCMeta):
