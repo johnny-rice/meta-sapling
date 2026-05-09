@@ -289,6 +289,9 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
 
   std::optional<ObjectId> getObjectId() const override;
 
+  // Bypasses checkAccess(): all user-facing callers are guarded upstream
+  // (path traversal, lock accessors). Internal callers (InodeMap, GC)
+  // need this to work on restricted inodes.
   bool isMaterialized() const override {
     return contents_.rlock()->isMaterialized();
   }

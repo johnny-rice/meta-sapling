@@ -497,24 +497,24 @@ ImmediateFuture<VirtualInode> TreeInode::getOrFindChild(
     bool loadInodes) {
   TraceBlock block("getOrFindChild");
 
-#ifndef _WIN32
-  if (name == kDotEdenName && getNodeId() != kRootNodeId) {
-    // If they ask for `.eden` in any subdir, return the magical
-    // this-dir symlink inode that resolves to the path to the
-    // root/.eden path.  We do this outside of the block below
-    // because getInodeSlow() will call TreeInode::getOrFindChild()
-    // recursively, and it is cleaner to break this logic out
-    // separately.
-    return getMount()
-        ->getInodeSlow(".eden/this-dir"_relpath, context)
-        .thenValue([](auto&& inode) { return VirtualInode{std::move(inode)}; });
-  }
-#endif // !_WIN32
   auto doGetOrFindChild = [self = inodePtrFromThis(),
                            name = PathComponent{name},
                            context = context.copy(),
                            loadInodes,
                            block = std::move(block)](folly::Unit) mutable {
+    // Explicit ACL check required: uses raw contents_ access via
+    // tryRlockCheckBeforeUpdate, bypassing guarded lock accessors.
+    // Placed inside the lambda so that recheckPermissionIfExpired has a
+    // chance to clear the restriction before we throw EACCES.
+    self->checkAccess();
+#ifndef _WIN32
+    if (name == kDotEdenName && self->getNodeId() != kRootNodeId) {
+      return self->getMount()
+          ->getInodeSlow(".eden/this-dir"_relpath, context)
+          .thenValue(
+              [](auto&& inode) { return VirtualInode{std::move(inode)}; });
+    }
+#endif // !_WIN32
     return tryRlockCheckBeforeUpdate<ImmediateFuture<VirtualInode>>(
                self->contents_,
                [&](const auto& contents)
@@ -524,6 +524,9 @@ ImmediateFuture<VirtualInode> TreeInode::getOrFindChild(
                },
                [&](auto& contents) -> ImmediateFuture<VirtualInode> {
                  auto result = self->loadChild(contents, name, context);
+                 // it's important the code between loadChild and
+                 // loadChildCleanUp is no throw. We need to perform the
+                 // loadChildCleanUp now regardless of exception.
                  contents.unlock();
                  self->loadChildCleanUp(name, std::move(result.second));
                  return ImmediateFuture<InodePtr>{std::move(result.first)}
@@ -580,6 +583,15 @@ folly::coro::now_task<VirtualInode> TreeInode::co_getOrFindChild(
     const ObjectFetchContextPtr& context,
     bool loadInodes) {
   TraceBlock block("co_getOrFindChild");
+
+  // If restricted, recheck permission before throwing EACCES — the restriction
+  // may have expired.
+  if (FOLLY_UNLIKELY(isRestricted())) {
+    recheckPermissionIfExpired(context).get();
+  }
+  // Explicit ACL check required: uses raw contents_.rlock() / contents_.wlock()
+  // directly, bypassing guarded lock accessors.
+  checkAccess();
 
 #ifndef _WIN32
   if (name == kDotEdenName && getNodeId() != kRootNodeId) {
@@ -659,7 +671,7 @@ TreeInode::getChildren(const ObjectFetchContextPtr& context, bool loadInodes) {
         loadChildCleanUp(cleanUp.first, std::move(cleanUp.second));
       }
     };
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     result.reserve(contents->entries.size());
     inodeLoadCleanUps.reserve(contents->entries.size());
     for (const auto& entry : contents->entries) {
@@ -808,7 +820,7 @@ folly::coro::now_task<InodePtr> TreeInode::co_getChildRecursive(
 }
 
 InodeNumber TreeInode::getChildInodeNumber(PathComponentPiece name) {
-  auto contents = contents_.wlock();
+  auto contents = lockContentsRead();
   auto iter = contents->entries.find(name);
   if (iter == contents->entries.end()) {
     throw InodeError(ENOENT, inodePtrFromThis(), name);
@@ -896,7 +908,7 @@ void TreeInode::loadChildInode(PathComponentPiece name, InodeNumber number) {
   std::optional<PathComponent> inodeName;
   auto future = Future<unique_ptr<InodeBase>>::makeEmpty();
   {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     auto iter = contents->entries.find(name);
     if (iter == contents->entries.end()) {
       auto bug = EDEN_BUG_EXCEPTION()
@@ -960,7 +972,7 @@ void TreeInode::inodeLoadComplete(
   InodePtr inodePtr;
 
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     auto iter = contents->entries.find(childName);
     if (iter == contents->entries.end()) {
       // This shouldn't ever happen.
@@ -1142,7 +1154,7 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                 auto dir = self->buildUnrestrictedDirContents(
                     number, *tree, std::move(loadOverlayDirSpan));
 
-                return make_unique<TreeInode>(
+                return std::make_unique<TreeInode>(
                     number,
                     std::move(self),
                     childName,
@@ -1189,7 +1201,7 @@ void TreeInode::materialize(const RenameLock* renameLock) {
   // If we don't have the rename lock yet, do a quick check first
   // to avoid acquiring it if we don't actually need to change anything.
   if (!renameLock) {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     if (contents->isMaterialized()) {
       return;
     }
@@ -1225,7 +1237,7 @@ void TreeInode::materialize(const RenameLock* renameLock) {
     // we won't have any state indicating which source control id our
     // contents are from.
     {
-      auto contents = contents_.wlock();
+      auto contents = lockContentsWrite();
       // Double check that we still need to be materialized
       if (contents->isMaterialized()) {
         return;
@@ -1268,7 +1280,7 @@ void TreeInode::childMaterialized(
   auto startTime = std::chrono::system_clock::now();
   bool wasAlreadyMaterialized = false;
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     wasAlreadyMaterialized = contents->isMaterialized();
     if (!wasAlreadyMaterialized) {
       getMount()->publishInodeTraceEvent(InodeTraceEvent(
@@ -1330,7 +1342,7 @@ void TreeInode::childDematerialized(
   auto startTime = std::chrono::system_clock::now();
   bool wasAlreadyMaterialized = false;
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     wasAlreadyMaterialized = contents->isMaterialized();
     if (!wasAlreadyMaterialized) {
       getMount()->publishInodeTraceEvent(InodeTraceEvent(
@@ -1609,7 +1621,7 @@ FileInodePtr TreeInode::createImpl(
 }
 
 std::optional<ObjectId> TreeInode::getObjectId() const {
-  auto state = contents_.rlock();
+  auto state = getContentsUnchecked().rlock();
   return state->treeId;
 }
 
@@ -1619,7 +1631,7 @@ ImmediateFuture<std::optional<Hash32>> TreeInode::getDigestHash(
     return std::optional<Hash32>(std::nullopt);
   }
   logAccess(*fetchContext);
-  auto state = contents_.rlock();
+  auto state = lockContentsRead();
 
   if (!state->isMaterialized()) {
     // If a tree is not materialized, it should have an id value.
@@ -1636,7 +1648,7 @@ ImmediateFuture<std::optional<uint64_t>> TreeInode::getDigestSize(
     return std::optional<uint64_t>(std::nullopt);
   }
   logAccess(*fetchContext);
-  auto state = contents_.rlock();
+  auto state = lockContentsRead();
 
   if (!state->isMaterialized()) {
     // If a tree is not materialized, it should have an id size.
@@ -1654,7 +1666,7 @@ ImmediateFuture<std::optional<TreeAuxData>> TreeInode::getTreeAuxData(
     return std::optional<TreeAuxData>(std::nullopt);
   }
   logAccess(*fetchContext);
-  auto state = contents_.rlock();
+  auto state = lockContentsRead();
 
   if (!state->isMaterialized()) {
     // If a tree is not materialized, it should have aux data.
@@ -1684,7 +1696,7 @@ FileInodePtr TreeInode::symlink(
 
   {
     // Acquire our contents lock
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     const mode_t mode = S_IFLNK | 0770;
     return createImpl(
         std::move(contents),
@@ -1730,7 +1742,7 @@ FileInodePtr TreeInode::mknod(
 
   {
     // Acquire our contents lock
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     return createImpl(
         std::move(contents), name, mode, ByteRange{}, invalidate, startTime);
   }
@@ -1758,7 +1770,7 @@ TreeInodePtr TreeInode::mkdir(
   TreeInodePtr newChild;
   {
     // Acquire our contents lock
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
 
     auto myPath = getPath();
     // Make sure this directory has not been unlinked.
@@ -1874,7 +1886,7 @@ void TreeInode::removeAllChildrenRecursively(
   // If this tree is not materialized and has no entries, we can return early
   // without materializing, since there's nothing to remove.
   {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     if (!contents->isMaterialized() && contents->entries.empty()) {
       return;
     }
@@ -1890,7 +1902,7 @@ void TreeInode::removeAllChildrenRecursively(
   std::vector<TreeInodePtr> loadedTreeNodes;
   // Step 1, collect children nodes who are tree and loaded
   {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     for (auto& entry : contents->entries) {
       if (auto asTreePtr = entry.second.asTreePtrOrNull()) {
         loadedTreeNodes.push_back(std::move(asTreePtr));
@@ -1907,7 +1919,7 @@ void TreeInode::removeAllChildrenRecursively(
 
   // Step 3, Now all child nodes are removable, unless one of the directories
   // had a new entry added while the contents lock was not held.
-  auto contents = contents_.wlock();
+  auto contents = lockContentsWrite();
   auto it = contents->entries.begin();
   while (it != contents->entries.end()) {
     auto inodeNum = it->second.getInodeNumber();
@@ -1964,7 +1976,7 @@ InodePtr TreeInode::tryRemoveUnloadedChild(
     throw InodeError(EPERM, inodePtrFromThis());
   }
 #endif
-  auto contents = contents_.wlock();
+  auto contents = lockContentsWrite();
 
   auto it = contents->entries.find(name);
   if (it == contents->entries.end()) {
@@ -2150,7 +2162,7 @@ int TreeInode::tryRemoveChild(
   std::unique_ptr<InodeBase> deletedInode;
   std::optional<PathComponent> inodeName;
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
 
     // Make sure that this name still corresponds to the child inode we just
     // looked up.
@@ -2220,7 +2232,7 @@ int TreeInode::tryRemoveChild(
 
 int TreeInode::checkPreRemove(const TreeInode& child) {
   // Lock the child contents, and make sure they are empty
-  auto childContents = child.contents_.rlock();
+  auto childContents = child.lockContentsRead();
   if (!childContents->entries.empty()) {
     return ENOTEMPTY;
   }
@@ -2360,6 +2372,11 @@ ImmediateFuture<Unit> TreeInode::rename(
         folly::Try<Unit>{InodeError{EPERM, destParent, destName}}};
   }
 #endif
+  // Fail-fast ACL check on source parent. Uses raw lock access via
+  // TreeRenameLocks. Destination parent is checked through
+  // destParent->materialize() and TreeRenameLocks::acquireLocks(),
+  // both of which call lockContentsWrite() -> checkAccess().
+  checkAccess();
   validatePathComponentLength(destName);
 
   bool needSrc = false;
@@ -2666,7 +2683,7 @@ void TreeInode::TreeRenameLocks::acquireLocks(
   if (srcTree == destTree) {
     // If the source and destination directories are the same,
     // then there is really only one parent directory to lock.
-    srcContentsLock_ = srcTree->contents_.wlock();
+    srcContentsLock_ = srcTree->lockContentsWrite();
     srcContents_ = &srcContentsLock_->entries;
     destContents_ = &srcContentsLock_->entries;
     // Look up the destination child entry, and lock it if it is a directory
@@ -2674,9 +2691,9 @@ void TreeInode::TreeRenameLocks::acquireLocks(
   } else if (isAncestor(renameLock_, srcTree, destTree)) {
     // If srcTree is an ancestor of destTree, we must acquire the lock on
     // srcTree first.
-    srcContentsLock_ = srcTree->contents_.wlock();
+    srcContentsLock_ = srcTree->lockContentsWrite();
     srcContents_ = &srcContentsLock_->entries;
-    destContentsLock_ = destTree->contents_.wlock();
+    destContentsLock_ = destTree->lockContentsWrite();
     destContents_ = &destContentsLock_->entries;
     lockDestChild(destName);
   } else {
@@ -2686,7 +2703,7 @@ void TreeInode::TreeRenameLocks::acquireLocks(
     // It is not possible for srcTree to be an ancestor of destChild,
     // since we have confirmed that srcTree is not destTree nor an ancestor of
     // destTree.
-    destContentsLock_ = destTree->contents_.wlock();
+    destContentsLock_ = destTree->lockContentsWrite();
     destContents_ = &destContentsLock_->entries;
     lockDestChild(destName);
 
@@ -2701,7 +2718,7 @@ void TreeInode::TreeRenameLocks::acquireLocks(
       XCHECK_NE(destChildContents_, nullptr);
       srcContents_ = destChildContents_;
     } else {
-      srcContentsLock_ = srcTree->contents_.wlock();
+      srcContentsLock_ = srcTree->lockContentsWrite();
       srcContents_ = &srcContentsLock_->entries;
     }
   }
@@ -2712,7 +2729,7 @@ void TreeInode::TreeRenameLocks::lockDestChild(PathComponentPiece destName) {
   destChildIter_ = destContents_->find(destName);
   if (destChildExists() && destChildIsDirectory() && destChild() != nullptr) {
     auto* childTree = boost::polymorphic_downcast<TreeInode*>(destChild());
-    destChildContentsLock_ = childTree->contents_.wlock();
+    destChildContentsLock_ = childTree->lockContentsWrite();
     destChildContents_ = &destChildContentsLock_->entries;
   }
 }
@@ -2801,7 +2818,7 @@ bool TreeInode::readdirImpl(
     }
   }
 
-  auto dir = contents_.rlock();
+  auto dir = lockContentsRead();
   auto& entries = dir->entries;
 
   // Compute an index into the PathMap by InodeNumber, only including the
@@ -2931,7 +2948,7 @@ ImmediateFuture<Unit> TreeInode::diff(
   {
     // We have to get a write lock since we may have to load
     // the .gitignore inode, which changes the entry status
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
 
     // TODO: support trees.size() != 1
     XLOGF(
@@ -3066,7 +3083,7 @@ folly::coro::now_task<folly::Unit> TreeInode::co_diff(
   auto gitignoreInodeFuture = ImmediateFuture<InodePtr>::makeEmpty();
   vector<IncompleteInodeLoad> pendingLoads;
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
 
     XLOGF(
         DBG7,
@@ -3194,7 +3211,7 @@ ImmediateFuture<Unit> TreeInode::loadGitIgnoreThenDiff(
               ignoreFileContents = std::move(ignoreFileContentsTry).value();
             }
             return self->computeDiff(
-                self->contents_.wlock(),
+                self->lockContentsWrite(),
                 context,
                 currentPath,
                 std::move(trees),
@@ -3235,7 +3252,7 @@ folly::coro::now_task<folly::Unit> TreeInode::co_loadGitIgnoreThenDiff(
   }
 
   co_await co_computeDiff(
-      contents_.wlock(),
+      lockContentsWrite(),
       context,
       currentPath,
       std::move(trees),
@@ -3856,7 +3873,7 @@ ImmediateFuture<Unit> TreeInode::checkout(
               // reason is that we in theory need to rollback what was done in
               // case we can't invalidate.
               {
-                auto contents = self->contents_.wlock();
+                auto contents = self->lockContentsWrite();
                 self->updateMtimeAndCtimeLocked(
                     contents->entries, self->getNow());
                 invalidation = self->invalidateChannelDirCache(*contents);
@@ -3954,7 +3971,7 @@ void TreeInode::computeCheckoutActions(
   auto computeActionsSpan = ctx->createSpan("computeCheckoutActions");
 
   // Grab the contents_ lock for the duration of this function
-  auto contents = contents_.wlock();
+  auto contents = lockContentsWrite();
 
   // If we are the same as some known source control Tree, check to see if we
   // can quickly tell if we have nothing to do for this checkout operation and
@@ -4478,7 +4495,7 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
     std::optional<PathComponent> inodeName;
     {
       std::unique_ptr<InodeBase> deletedInode;
-      auto contents = contents_.wlock();
+      auto contents = lockContentsWrite();
 
       // The CheckoutContext should be holding the rename lock, so the entry
       // at this name should still be the specified inode.
@@ -4616,7 +4633,7 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
 
             if (parentInode
                     ->invalidateChannelEntryCache(
-                        *parentInode->contents_.wlock(),
+                        *parentInode->lockContentsWrite(),
                         name,
                         treeInode->getNodeId())
                     .hasException()) {
@@ -4676,7 +4693,7 @@ ImmediateFuture<InvalidationRequired> TreeInode::checkoutUpdateEntry(
 
             bool inserted = false;
             {
-              auto contents = parentInode->contents_.wlock();
+              auto contents = parentInode->lockContentsWrite();
               auto ret = contents->entries.emplace(
                   newScmEntry->first,
                   modeFromTreeEntryType(newScmEntry->second.getType()),
@@ -4862,7 +4879,7 @@ void TreeInode::saveOverlayPostCheckout(
   bool isMaterialized;
   bool stateChanged;
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
 
     // Check to see if we need to be materialized or not.
     //
@@ -5321,7 +5338,7 @@ ImmediateFuture<uint64_t> TreeInode::invalidateChildrenNotAccessedRecentlyFuse(
         // Now invalidate our own children that haven't been accessed recently.
         // We need to hold the contents lock to iterate entries, and call
         // invalidateEntry for each stale child.
-        auto contents = self->contents_.rlock();
+        auto contents = self->getContentsUnchecked().rlock();
         for (const auto& entry : contents->entries) {
           auto* entryInode = entry.second.getInode();
           if (!entryInode) {
@@ -5404,7 +5421,7 @@ TreeInode::invalidateChildrenNotMaterializedNFS(
             return std::make_pair(numInvalidated, true);
           }
 
-          auto contents = self->contents_.wlock();
+          auto contents = self->lockContentsWrite();
           if (!allDescendantsInvalidated) {
             // If any of the children are not invalidated, we should skip
             // invalidation of this directory.
@@ -5533,7 +5550,7 @@ TreeInode::invalidateChildrenNotMaterializedPrjFS(
                 return numInvalidated;
               }
 
-              auto contents = self->contents_.wlock();
+              auto contents = self->lockContentsWrite();
               auto* inodeMap = self->getInodeMap();
               for (auto& entry : contents->entries) {
                 if (entry.second.isMaterialized()) {
@@ -5615,12 +5632,21 @@ TreeInode::invalidateChildrenNotMaterializedPrjFS(
 }
 
 void TreeInode::updateAtime() {
-  auto lock = contents_.wlock();
+  if (FOLLY_UNLIKELY(isRestricted_)) {
+    return;
+  }
+  auto lock = lockContentsWrite();
   InodeBaseMetadata::updateAtimeLocked(lock->entries);
 }
 
 void TreeInode::forceMetadataUpdate() {
-  auto contents = contents_.wlock();
+  // Restricted inodes have synthetic zeroed metadata (from stat()), so
+  // timestamp updates are meaningless. Silent skip also prevents EACCES
+  // from propagating through the NFS invalidation Thrift path.
+  if (FOLLY_UNLIKELY(isRestricted_)) {
+    return;
+  }
+  auto contents = lockContentsWrite();
   InodeBaseMetadata::updateMtimeAndCtimeLocked(contents->entries, getNow());
 }
 
@@ -5631,7 +5657,7 @@ ImmediateFuture<folly::Unit> TreeInode::ensureMaterialized(
   std::vector<ImmediateFuture<folly::Unit>> childFutures;
   std::vector<PathComponent> names;
   {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     names.reserve(contents->entries.size());
     for (auto& entry : contents->entries) {
       names.emplace_back(entry.first);
@@ -5675,7 +5701,7 @@ size_t TreeInode::unloadChildrenLastAccessedBefore(const timespec& cutoff) {
   std::vector<FileInodePtr> fileChildren;
   std::vector<TreeInodePtr> treeChildren;
   {
-    auto contents = contents_.rlock();
+    auto contents = lockContentsRead();
     for (auto& entry : contents->entries) {
       if (!entry.second.getInode()) {
         continue;
@@ -5738,7 +5764,7 @@ size_t TreeInode::unloadChildrenLastAccessedBefore(const timespec& cutoff) {
 }
 
 InodeMetadata TreeInode::getMetadata() const {
-  auto lock = contents_.rlock();
+  auto lock = getContentsUnchecked().rlock();
   return getMetadataLocked(lock->entries);
 }
 
@@ -5891,7 +5917,7 @@ void TreeInode::doPrefetch(
         auto& context = lease.getContext();
 
         {
-          auto contents = lease.getTreeInode()->contents_.wlock();
+          auto contents = lease.getTreeInode()->lockContentsWrite();
 
           for (auto& [name, entry] : contents->entries) {
             if (entry.getInode()) {
@@ -5946,6 +5972,9 @@ void TreeInode::doPrefetch(
 ImmediateFuture<struct stat> TreeInode::setattr(
     const DesiredMetadata& desired,
     const ObjectFetchContextPtr& /*fetchContext*/) {
+  // Explicit ACL check required: the Windows path below bypasses
+  // lockContentsWrite(), so this is the only guard on that platform.
+  checkAccess();
 #ifndef _WIN32
   struct stat result(getMount()->initStatData());
   result.st_ino = getNodeId().get();
@@ -5954,7 +5983,7 @@ ImmediateFuture<struct stat> TreeInode::setattr(
   // call, but we cannot hold the lock while we materialize, so we
   // have to take the lock twice.
   {
-    auto contents = contents_.wlock();
+    auto contents = lockContentsWrite();
     auto existing = getMetadataLocked(contents->entries);
 
     if (existing.shouldShortCircuitMetadataUpdate(desired)) {
@@ -5973,7 +6002,7 @@ ImmediateFuture<struct stat> TreeInode::setattr(
   // but for now we are simply setting the mode to (S_IFDIR | 0755).
 
   // Set timeStamps, mode in the result.
-  auto contents = contents_.wlock();
+  auto contents = lockContentsWrite();
   auto metadata = getMount()->getInodeMetadataTable()->modifyOrThrow(
       getNodeId(),
       [&](auto& metadata) { metadata.updateFromDesired(getClock(), desired); });
