@@ -426,6 +426,12 @@ std::optional<ImmediateFuture<VirtualInode>> TreeInode::rlockGetOrFindChild(
   // so it's safe here to ignore the loading inode and instead
   // query the object store for information about the path.
   if (entry.isDirectory()) {
+    if (entry.isRestricted()) {
+      return VirtualInode::makeRestricted(
+          entry.getObjectId(),
+          entry.getInitialMode(),
+          contents.entries.getCaseSensitivity());
+    }
     // This is a directory, always get the tree corresponding to
     // the id
     return getObjectStore()
@@ -586,6 +592,12 @@ std::optional<VirtualInode> TreeInode::rlockCheckChild(
 
   logAccess(*context);
   if (entry.isDirectory()) {
+    if (entry.isRestricted()) {
+      return VirtualInode::makeRestricted(
+          entry.getObjectId(),
+          entry.getInitialMode(),
+          contents.entries.getCaseSensitivity());
+    }
     dirFetch = PendingDirFetch{entry.getObjectId(), entry.getInitialMode()};
     return std::nullopt;
   }

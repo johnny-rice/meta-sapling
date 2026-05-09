@@ -23,6 +23,24 @@
 
 namespace facebook::eden {
 
+VirtualInode VirtualInode::makeRestricted(
+    const TreeEntry& entry,
+    CaseSensitivity caseSensitivity) {
+  return makeRestricted(
+      entry.getObjectId(),
+      modeFromTreeEntryType(entry.getType()),
+      caseSensitivity);
+}
+
+VirtualInode VirtualInode::makeRestricted(
+    const ObjectId& id,
+    mode_t mode,
+    CaseSensitivity caseSensitivity) {
+  auto restrictedTree = std::make_shared<const Tree>(
+      Tree::Restricted{}, Tree::container{caseSensitivity}, id);
+  return VirtualInode{std::move(restrictedTree), mode};
+}
+
 InodePtr VirtualInode::asInodePtr() const {
   return std::get<InodePtr>(variant_);
 }
@@ -768,13 +786,21 @@ getChildrenHelper(
   for (auto& child : *tree) {
     const auto* treeEntry = &child.second;
     if (treeEntry->isTree()) {
-      result.emplace_back(
-          child.first,
-          objectStore->getTree(treeEntry->getObjectId(), fetchContext)
-              .thenValue([mode = modeFromTreeEntryType(treeEntry->getType())](
-                             TreePtr tree) {
-                return VirtualInode{std::move(tree), mode};
-              }));
+      if (treeEntry->isRestricted()) {
+        // Skip fetch — return restricted empty tree
+        result.emplace_back(
+            child.first,
+            VirtualInode::makeRestricted(
+                *treeEntry, tree->getCaseSensitivity()));
+      } else {
+        result.emplace_back(
+            child.first,
+            objectStore->getTree(treeEntry->getObjectId(), fetchContext)
+                .thenValue([mode = modeFromTreeEntryType(treeEntry->getType())](
+                               TreePtr tree) {
+                  return VirtualInode{std::move(tree), mode};
+                }));
+      }
     } else {
       // This is a file, return the TreeEntry for it
       result.emplace_back(child.first, VirtualInode{*treeEntry});
@@ -812,6 +838,11 @@ VirtualInode::getChildren(
             inode.asTreePtr()->getChildren(fetchContext, false)};
       },
       [&](const TreePtr& tree) {
+        if (tree->isRestricted()) {
+          return folly::Try<std::vector<
+              std::pair<PathComponent, ImmediateFuture<VirtualInode>>>>{
+              PathError(EACCES, path)};
+        }
         return folly::Try<std::vector<
             std::pair<PathComponent, ImmediateFuture<VirtualInode>>>>{
             getChildrenHelper(tree, objectStore, fetchContext)};
@@ -888,6 +919,10 @@ folly::coro::now_task<VirtualInode> co_getOrFindChildHelper(
     RelativePathPiece path,
     const std::shared_ptr<ObjectStore>& objectStore,
     const ObjectFetchContextPtr& fetchContext) {
+  if (tree->isRestricted()) {
+    co_yield folly::coro::co_error(
+        std::system_error(EACCES, std::generic_category()));
+  }
   // Lookup the next child
   const auto it = tree->find(childName);
   if (it == tree->cend()) {
@@ -904,6 +939,10 @@ folly::coro::now_task<VirtualInode> co_getOrFindChildHelper(
   // Always descend if the treeEntry is a Tree
   const auto* treeEntry = &it->second;
   if (treeEntry->isTree()) {
+    if (treeEntry->isRestricted()) {
+      co_return VirtualInode::makeRestricted(
+          *treeEntry, tree->getCaseSensitivity());
+    }
     auto treeResult = co_await objectStore->co_getTree(
         treeEntry->getObjectId(), fetchContext);
     auto mode = modeFromTreeEntryType(treeEntry->getType());

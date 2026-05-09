@@ -61,6 +61,22 @@ class VirtualInode {
   }
 
   /**
+   * Create a VirtualInode wrapping a restricted (ACL-denied) empty tree.
+   */
+  static VirtualInode makeRestricted(
+      const TreeEntry& entry,
+      CaseSensitivity caseSensitivity);
+
+  /**
+   * Overload for callers that have a DirEntry (ObjectId + mode) rather
+   * than a model TreeEntry.
+   */
+  static VirtualInode makeRestricted(
+      const ObjectId& id,
+      mode_t mode,
+      CaseSensitivity caseSensitivity);
+
+  /**
    * Returns the contained InodePtr.
    *
    * If there is not one, throws a std::exception.
