@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <memory>
+#include <optional>
 
 #include "eden/common/telemetry/NullStructuredLogger.h"
 #include "eden/common/utils/FaultInjector.h"
@@ -28,6 +29,7 @@
 #include "eden/fs/telemetry/EdenStats.h"
 #include "eden/fs/testharness/HgRepo.h"
 #include "eden/fs/testharness/TestConfigSource.h"
+#include "eden/scm/lib/backingstore/include/SaplingBackingStoreError.h"
 
 using namespace std::chrono_literals;
 
@@ -150,6 +152,26 @@ TEST_F(SaplingBackingStoreNoFaultInjectorTest, getTree) {
           .get(kTestTimeout);
 
   EXPECT_TRUE(*tree1.tree == *tree2);
+}
+
+TEST_F(
+    SaplingBackingStoreNoFaultInjectorTest,
+    getTreeBatchConvertsPermissionDeniedToRestrictedTree) {
+  auto id = ObjectId::fromHex("0123456789012345678901234567890123456789");
+  auto denied = folly::Try<TreePtr>{
+      folly::make_exception_wrapper<sapling::SaplingBackingStoreError>(
+          "permission denied",
+          sapling::BackingStoreErrorKind::PermissionDenied,
+          std::nullopt)};
+
+  auto converted = queuedBackingStore->convertPermissionDeniedToRestrictedTree(
+      std::move(denied), id);
+
+  ASSERT_FALSE(converted.hasException());
+  auto tree = converted.value();
+  ASSERT_NE(nullptr, tree);
+  EXPECT_TRUE(tree->isRestricted());
+  EXPECT_EQ(id, tree->getObjectId());
 }
 
 TEST_F(SaplingBackingStoreWithFaultInjectorTest, getTree) {

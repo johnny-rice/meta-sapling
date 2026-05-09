@@ -347,6 +347,9 @@ class SaplingBackingStore final
       SaplingBackingStoreWithFaultInjectorIgnoreConfigTest,
       getTreeBatch);
   FRIEND_TEST(
+      SaplingBackingStoreNoFaultInjectorTest,
+      getTreeBatchConvertsPermissionDeniedToRestrictedTree);
+  FRIEND_TEST(
       SaplingBackingStoreWithFaultInjectorTest,
       getRootTreeFutureChainCanBePausedAndResumed);
   FRIEND_TEST(
@@ -677,6 +680,9 @@ class SaplingBackingStore final
       SaplingImportObject object) const;
 
   TreePtr makeRestrictedTree(ObjectId id) const;
+  folly::Try<TreePtr> convertPermissionDeniedToRestrictedTree(
+      folly::Try<TreePtr> content,
+      ObjectId id) const;
 
   /**
    * Gets the watches timing pending `object` imports

@@ -538,6 +538,11 @@ void SaplingBackingStore::getTreeBatch(
   }
 
   auto callback = [&](size_t index, folly::Try<TreePtr> content) mutable {
+    // Convert PermissionDenied errors to restricted trees, matching the
+    // single-fetch path in getNativeTree.
+    content = convertPermissionDeniedToRestrictedTree(
+        std::move(content), SaplingObjectId{requests[index].oid}.oid());
+
     if (content.hasException()) {
       XLOGF(
           DBG4,
@@ -1379,6 +1384,21 @@ TreePtr SaplingBackingStore::makeRestrictedTree(ObjectId id) const {
       Tree::Restricted{}, Tree::container{caseSensitive_}, std::move(id));
 }
 
+folly::Try<TreePtr>
+SaplingBackingStore::convertPermissionDeniedToRestrictedTree(
+    folly::Try<TreePtr> content,
+    ObjectId id) const {
+  if (content.hasException()) {
+    if (auto* err = content.exception()
+                        .get_exception<sapling::SaplingBackingStoreError>()) {
+      if (err->kind() == sapling::BackingStoreErrorKind::PermissionDenied) {
+        return folly::Try<TreePtr>{makeRestrictedTree(std::move(id))};
+      }
+    }
+  }
+  return content;
+}
+
 folly::Try<facebook::eden::TreePtr> SaplingBackingStore::getNativeTree(
     SlOidView slOid,
     const ObjectFetchContextPtr& context,
@@ -1399,7 +1419,7 @@ folly::Try<facebook::eden::TreePtr> SaplingBackingStore::getNativeTree(
     if (result.error != nullptr) {
       if (result.error->kind() ==
           sapling::BackingStoreErrorKind::PermissionDenied) {
-        return makeRestrictedTree(ObjectId{slOid.node().getBytes()});
+        return makeRestrictedTree(SaplingObjectId{slOid}.oid());
       }
       throw std::move(*result.error);
     }

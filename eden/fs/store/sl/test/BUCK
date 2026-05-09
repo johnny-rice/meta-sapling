@@ -44,6 +44,7 @@ cpp_unittest(
         "//eden/fs/telemetry:stats",
         "//eden/fs/testharness:hg_repo",
         "//eden/fs/testharness:test_config_source",
+        "//eden/scm/lib/backingstore:sapling_native_backingstore",
         "//folly:range",
         "//folly:scope_guard",
         "//folly:try",
