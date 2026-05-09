@@ -364,3 +364,89 @@ TEST_F(RestrictedTreeInodeEndToEnd, getObjectIdReturnsTrueId) {
   auto restrictedInode = getRestrictedInode();
   EXPECT_TRUE(restrictedInode->getObjectId().has_value());
 }
+
+#ifndef _WIN32
+TEST_F(RestrictedTreeInodeEndToEnd, getMetadataBypassesAcl) {
+  auto restrictedInode = getRestrictedInode();
+
+  auto metadata = restrictedInode->getMetadata();
+
+  EXPECT_TRUE(S_ISDIR(metadata.mode));
+}
+
+TEST_F(
+    RestrictedTreeInodeEndToEnd,
+    getInodeSlowRejectsDotEdenUnderRestrictedDir) {
+  auto context = ObjectFetchContext::getNullContext();
+
+  expectEacces([&] {
+    auto lookup = testMount_->getEdenMount()->getInodeSlow(
+        "restricted/.eden"_relpath, context);
+    std::move(lookup).get();
+  });
+}
+
+TEST(RestrictedTreeInode, getInodeSlowAllowsDotEdenUnderUnrestrictedDir) {
+  FakeTreeBuilder builder;
+  builder.setFile("visible/file.txt", "content");
+  TestMount testMount{builder};
+
+  auto context = ObjectFetchContext::getNullContext();
+  auto throughVisible =
+      testMount.getEdenMount()->getInodeSlow("visible/.eden"_relpath, context);
+  auto dotEdenThisDir =
+      testMount.getEdenMount()->getInodeSlow(".eden/this-dir"_relpath, context);
+  auto throughVisibleInode = std::move(throughVisible).get();
+  auto dotEdenThisDirInode = std::move(dotEdenThisDir).get();
+
+  EXPECT_EQ(throughVisibleInode->getNodeId(), dotEdenThisDirInode->getNodeId());
+}
+#endif
+
+TEST(RestrictedTreeInode, renameFromRestrictedDirReturnsEACCES) {
+  // Renaming FROM a restricted directory should fail because the source
+  // parent's checkAccess() fires before any lock acquisition.
+  FakeTreeBuilder builder;
+  builder.setFile("restricted/file.txt", "content");
+  builder.setDirIsRestricted("restricted");
+  builder.setFile("dest/other.txt", "other");
+  TestMount testMount{builder};
+
+  auto restricted = testMount.getTreeInode("restricted"_relpath);
+  auto dest = testMount.getTreeInode("dest"_relpath);
+
+  expectEacces([&] {
+    restricted
+        ->rename(
+            "file.txt"_pc,
+            dest,
+            "moved.txt"_pc,
+            InvalidationRequired::No,
+            ObjectFetchContext::getNullContext())
+        .get();
+  });
+}
+
+TEST(RestrictedTreeInode, renameIntoRestrictedDirReturnsEACCES) {
+  // Renaming INTO a restricted directory should fail because the destination
+  // parent is checked via materialize() and TreeRenameLocks::acquireLocks(),
+  // both of which call lockContentsWrite() -> checkAccess().
+  FakeTreeBuilder builder;
+  builder.setFile("src/file.txt", "content");
+  builder.setFile("restricted/existing.txt", "secret");
+  builder.setDirIsRestricted("restricted");
+  TestMount testMount{builder};
+
+  auto src = testMount.getTreeInode("src"_relpath);
+  auto restricted = testMount.getTreeInode("restricted"_relpath);
+
+  expectEacces([&] {
+    src->rename(
+           "file.txt"_pc,
+           restricted,
+           "moved.txt"_pc,
+           InvalidationRequired::No,
+           ObjectFetchContext::getNullContext())
+        .get();
+  });
+}
