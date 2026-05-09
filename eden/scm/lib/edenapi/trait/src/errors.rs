@@ -50,8 +50,6 @@ pub enum SaplingRemoteApiError {
     MissingCerts(#[from] auth::MissingCerts),
     #[error("IncompleteResponse: {0}")]
     IncompleteResponse(String),
-    #[error("permission denied: {0}")]
-    PermissionDenied(String),
 }
 
 #[derive(Debug, Error)]
@@ -159,8 +157,7 @@ impl SaplingRemoteApiError {
             | InvalidUrl(_)
             | WireToApiConversionFailed(_)
             | NotSupported
-            | MissingCerts(_)
-            | PermissionDenied(_) => false,
+            | MissingCerts(_) => false,
         }
     }
 
