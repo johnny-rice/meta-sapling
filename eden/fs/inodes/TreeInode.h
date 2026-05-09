@@ -23,6 +23,7 @@
 #include "eden/fs/inodes/Traverse.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/model/TreeAuxDataFwd.h"
+#include "eden/fs/utils/MiniTracer.h"
 
 namespace facebook::eden {
 
@@ -814,6 +815,17 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
    * Throws EACCES with inode context for restricted directory access.
    */
   [[noreturn]] void throwRestrictedAccess() const;
+
+  /**
+   * Build DirContents for an unrestricted tree by checking the overlay
+   * first (preserving existing inode numbers), falling back to
+   * saveDirFromTree() for fresh allocation. Reused by startLoadingInode()
+   * and transitionToUnrestricted().
+   */
+  DirContents buildUnrestrictedDirContents(
+      InodeNumber inodeNumber,
+      const Tree& tree,
+      std::optional<MiniTracer::Span> loadOverlayDirSpan = std::nullopt);
 
   /**
    * createImpl() is a helper function for creating new children inodes.

@@ -993,8 +993,6 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
               // Tree has been loaded, end the getTree span
               getTreeSpan.reset();
 
-              // Even if the inode is not materialized, it may have inode
-              // numbers stored in the overlay.
               auto loadOverlayDirSpan =
                   fetchContext->createSpan("loadOverlayDir");
 
@@ -1007,51 +1005,17 @@ ImmediateFuture<unique_ptr<InodeBase>> TreeInode::startLoadingInode(
                    tree = std::move(tree),
                    loadOverlayDirSpan = std::move(
                        loadOverlayDirSpan)]() mutable -> unique_ptr<InodeBase> {
-                auto overlayDir = self->loadOverlayDir(number);
-                loadOverlayDirSpan.reset();
-
-                // If the directory we loaded from overlay is empty,
-                // there is no need to compare them and we can just use
-                // the version from backing store. The differences
-                // between nonexistent overlay and empty directory does
-                // not matter here.
-                if (!overlayDir.empty()) {
-                  // Compare the Tree and the Dir from the overlay.  If
-                  // they differ, something is wrong, so log the
-                  // difference.
-                  if (auto differences =
-                          findEntryDifferences(overlayDir, *tree)) {
-                    std::string diffString;
-                    for (const auto& diff : *differences) {
-                      diffString += diff;
-                      diffString += '\n';
-                    }
-                    XLOGF(
-                        ERR,
-                        "loaded entry {} / {} (inode number {}) from overlay but the entries don't correspond with the tree.  Something is wrong!\n{}",
-                        self->getLogPath(),
-                        childName,
-                        number,
-                        diffString);
-                  }
-
-                  XLOGF(
-                      DBG6,
-                      "found entry {} with inode number {} in overlay",
-                      childName,
-                      number);
-                  return make_unique<TreeInode>(
-                      number,
-                      std::move(self),
-                      childName,
-                      entryMode,
-                      std::nullopt,
-                      std::move(overlayDir),
-                      treeId);
-                }
+                auto dir = self->buildUnrestrictedDirContents(
+                    number, *tree, std::move(loadOverlayDirSpan));
 
                 return make_unique<TreeInode>(
-                    number, self, childName, entryMode, std::move(tree));
+                    number,
+                    std::move(self),
+                    childName,
+                    entryMode,
+                    std::nullopt,
+                    std::move(dir),
+                    treeId);
               };
 
               return maybeAddAsyncPoint(std::move(loadOverlayDirFunc));
@@ -1363,6 +1327,35 @@ DirContents TreeInode::buildDirFromTree(
   }
 
   return DirContents{std::move(entries), caseSensitive};
+}
+
+DirContents TreeInode::buildUnrestrictedDirContents(
+    InodeNumber inodeNumber,
+    const Tree& tree,
+    std::optional<MiniTracer::Span> loadOverlayDirSpan) {
+  // Even if the inode is not materialized, it may have inode
+  // numbers stored in the overlay.
+  auto overlayDir = loadOverlayDir(inodeNumber);
+  loadOverlayDirSpan.reset();
+
+  if (!overlayDir.empty()) {
+    if (auto differences = findEntryDifferences(overlayDir, tree)) {
+      std::string diffString;
+      for (const auto& diff : *differences) {
+        diffString += diff;
+        diffString += '\n';
+      }
+      XLOGF(
+          ERR,
+          "loaded inode {} (inode number {}) from overlay but the entries don't correspond with the tree.  Something is wrong!\n{}",
+          getLogPath(),
+          inodeNumber,
+          diffString);
+    }
+    return overlayDir;
+  }
+
+  return saveDirFromTree(inodeNumber, &tree, getMount());
 }
 
 FileInodePtr TreeInode::createImpl(
