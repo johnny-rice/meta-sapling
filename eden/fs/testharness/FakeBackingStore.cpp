@@ -575,4 +575,28 @@ void FakeBackingStore::discardOutstandingRequests() {
 size_t FakeBackingStore::getAccessCount(const ObjectId& id) const {
   return folly::get_default(data_.rlock()->accessCounts, id, 0);
 }
+
+void FakeBackingStore::setCheckPermissionResult(
+    const ObjectId& id,
+    bool allowed) {
+  auto data = data_.wlock();
+  data->permissionResults[id] = allowed;
+}
+
+size_t FakeBackingStore::getCheckPermissionCount(const ObjectId& id) const {
+  auto data = data_.rlock();
+  auto it = data->permissionCheckCounts.find(id);
+  return it != data->permissionCheckCounts.end() ? it->second : 0;
+}
+
+ImmediateFuture<bool> FakeBackingStore::checkPermission(
+    const ObjectId& manifestId) {
+  auto data = data_.wlock();
+  data->permissionCheckCounts[manifestId]++;
+  auto it = data->permissionResults.find(manifestId);
+  if (it != data->permissionResults.end()) {
+    return it->second;
+  }
+  return true; // default: fail-open
+}
 } // namespace facebook::eden

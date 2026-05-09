@@ -15,10 +15,12 @@
 #include <string>
 #include <unordered_map>
 
+#include <folly/container/F14Map.h>
 #include "eden/fs/model/Blob.h"
 #include "eden/fs/model/Hash.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/model/TreeEntry.h"
+
 #include "eden/fs/store/BackingStore.h"
 #include "eden/fs/store/ImportPriority.h"
 #include "eden/fs/testharness/StoredObject.h"
@@ -193,6 +195,19 @@ class FakeBackingStore final : public BackingStore {
     return data_.rlock()->auxDataLookups;
   }
 
+  /**
+   * Configure the result of checkPermission for a specific manifest ID.
+   * If not configured, checkPermission defaults to true (fail-open).
+   */
+  void setCheckPermissionResult(const ObjectId& id, bool allowed);
+
+  /**
+   * Get the number of times checkPermission was called for a specific ID.
+   */
+  size_t getCheckPermissionCount(const ObjectId& id) const;
+
+  ImmediateFuture<bool> checkPermission(const ObjectId& manifestId) override;
+
  private:
   struct Data {
     std::unordered_map<RootId, std::unique_ptr<StoredId>> commits;
@@ -206,6 +221,8 @@ class FakeBackingStore final : public BackingStore {
     std::unordered_map<RootId, size_t> commitAccessCounts;
     std::unordered_map<ObjectId, size_t> accessCounts;
     std::vector<ObjectId> auxDataLookups;
+    folly::F14FastMap<ObjectId, bool> permissionResults;
+    folly::F14FastMap<ObjectId, size_t> permissionCheckCounts;
   };
 
   static Tree::container buildTreeEntries(
