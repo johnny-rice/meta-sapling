@@ -147,6 +147,73 @@ class _RestrictedTreeTestMethods(_MethodsBase, metaclass=abc.ABCMeta):
         self.assertTrue(stat.S_ISDIR(st.st_mode))
         self.assertNotEqual(st.st_mode & 0o7777, 0)
 
+    def test_restricted_dir_stat_permissions(self) -> None:
+        restricted_path = os.path.join(self.mount, "restricted")
+        st = os.lstat(restricted_path)
+        self.assertTrue(stat.S_ISDIR(st.st_mode))
+        if self.expect_restricted:
+            self.assertEqual(st.st_mode & 0o7777, 0)
+        else:
+            self.assertNotEqual(st.st_mode & 0o7777, 0)
+
+    def test_restricted_dir_access(self) -> None:
+        restricted_path = os.path.join(self.mount, "restricted")
+        if self.expect_restricted:
+            self.assertFalse(os.access(restricted_path, os.R_OK))
+            self.assertFalse(os.access(restricted_path, os.W_OK))
+            self.assertFalse(os.access(restricted_path, os.X_OK))
+        else:
+            self.assertTrue(os.access(restricted_path, os.R_OK))
+
+    def test_restricted_dir_listdir(self) -> None:
+        restricted_path = os.path.join(self.mount, "restricted")
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(restricted_path)
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(restricted_path)
+            self.assertIn("secret.txt", entries)
+
+    def test_restricted_dir_file_access(self) -> None:
+        secret_path = os.path.join(self.mount, "restricted", "secret.txt")
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                with open(secret_path, "r") as f:
+                    f.read()
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            with open(secret_path, "r") as f:
+                self.assertEqual("secret content", f.read())
+
+    def test_nested_restricted_parent_is_accessible(self) -> None:
+        parent_entries = sorted(os.listdir(os.path.join(self.mount, "parent")))
+        self.assertIn("normal_file.txt", parent_entries)
+        self.assertIn("nested_restricted", parent_entries)
+
+    def test_nested_restricted_dir(self) -> None:
+        nested_path = os.path.join(self.mount, "parent", "nested_restricted")
+        if self.expect_restricted:
+            st = os.lstat(nested_path)
+            self.assertEqual(st.st_mode & 0o7777, 0)
+            with self.assertRaises(OSError) as ctx:
+                os.listdir(nested_path)
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            entries = os.listdir(nested_path)
+            self.assertIn("deep.txt", entries)
+
+    def test_create_file_in_restricted_dir(self) -> None:
+        new_file_path = os.path.join(self.mount, "restricted", "new_file.txt")
+        if self.expect_restricted:
+            with self.assertRaises(OSError) as ctx:
+                with open(new_file_path, "w") as f:
+                    f.write("should not be allowed")
+            self.assertEqual(ctx.exception.errno, errno.EACCES)
+        else:
+            with open(new_file_path, "w") as f:
+                f.write("should be allowed")
+
 
 class _RestrictedTreeConfigOffBase(_RestrictedTreeTestBase, metaclass=abc.ABCMeta):
     """Base for tests with restricted tree mode disabled."""
