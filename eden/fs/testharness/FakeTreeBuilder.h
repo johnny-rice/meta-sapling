@@ -175,6 +175,15 @@ class FakeTreeBuilder {
   void mkdir(RelativePathPiece path);
 
   /**
+   * Mark a directory entry as restricted (ACL-restricted).
+   * The directory must already exist.
+   */
+  void setDirIsRestricted(folly::StringPiece path) {
+    setDirIsRestricted(RelativePathPiece{path});
+  }
+  void setDirIsRestricted(RelativePathPiece path);
+
+  /**
    * Call setReady() on the StoredTree or StoredBlob at the given path.
    */
   void setReady(folly::StringPiece path) {
@@ -270,6 +279,7 @@ class FakeTreeBuilder {
     std::unique_ptr<PathMap<EntryInfo>> entries;
     std::string contents;
     std::optional<ObjectId> objectId;
+    bool isRestricted = false;
   };
 
   FakeTreeBuilder(FakeTreeBuilder const&) = delete;

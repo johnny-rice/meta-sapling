@@ -52,6 +52,14 @@ void FakeTreeBuilder::mkdir(RelativePathPiece path) {
   getDirEntry(path, true);
 }
 
+void FakeTreeBuilder::setDirIsRestricted(RelativePathPiece path) {
+  XCHECK(!finalizedRoot_);
+  auto* entry = getEntry(path);
+  XCHECK(entry->type == TreeEntryType::TREE)
+      << "setDirIsRestricted can only be called on directories";
+  entry->isRestricted = true;
+}
+
 void FakeTreeBuilder::setFileImpl(
     RelativePathPiece path,
     folly::ByteRange contents,
@@ -259,7 +267,9 @@ FakeTreeBuilder::EntryInfo::EntryInfo(TreeEntryType fileType) : type(fileType) {
 }
 
 FakeTreeBuilder::EntryInfo::EntryInfo(ExplicitClone, const EntryInfo& orig)
-    : type(orig.type), contents(orig.contents) {
+    : type(orig.type),
+      contents(orig.contents),
+      isRestricted(orig.isRestricted) {
   if (orig.entries) {
     entries = make_unique<PathMap<EntryInfo>>(kPathMapDefaultCaseSensitive);
     for (const auto& e : *orig.entries) {
@@ -285,7 +295,14 @@ StoredTree* FakeTreeBuilder::EntryInfo::finalizeTree(
       auto [storedBlob, id] = entryInfo.finalizeBlob(builder, setReady);
       oid = id;
     }
-    treeEntries.emplace(e.first, std::move(oid), entryInfo.type);
+    treeEntries.emplace(
+        e.first,
+        std::move(oid),
+        entryInfo.type,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        entryInfo.isRestricted);
   }
 
   auto* storedTree = builder->store_->maybePutTree(treeEntries).first;
