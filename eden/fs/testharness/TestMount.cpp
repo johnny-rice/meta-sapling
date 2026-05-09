@@ -269,7 +269,7 @@ void TestMount::createMount(
       stats_.copy(),
       std::make_shared<ProcessInfoCache>(),
       std::make_shared<NullStructuredLogger>(),
-      std::make_shared<ReloadableConfig>(edenConfig_),
+      serverState_->getReloadableConfig(),
       config_->getCaseSensitive());
   auto journal = std::make_unique<Journal>(stats_.copy());
   edenMount_ = EdenMount::create(
