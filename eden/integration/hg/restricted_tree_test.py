@@ -442,6 +442,14 @@ class _RestrictedTreeConfigOffBase(_RestrictedTreeTestBase, metaclass=abc.ABCMet
     enable_restricted_tree_mode: bool = False
 
 
+class _RestrictedTreeServerOnlyBase(
+    _RestrictedTreeConfigOffBase, metaclass=abc.ABCMeta
+):
+    """Base for tests that isolate server-side PermissionDenied enforcement."""
+
+    enable_server_acl_enforcement: bool = True
+
+
 @hg_test
 # pyre-ignore[13]: T62487924
 class RestrictedTreeTest(_RestrictedTreeTestMethods, _RestrictedTreeTestBase):
@@ -453,9 +461,17 @@ class RestrictedTreeTest(_RestrictedTreeTestMethods, _RestrictedTreeTestBase):
 @hg_test
 # pyre-ignore[13]: T62487924
 class RestrictedTreeEnforcementTest(
+    _RestrictedTreeTestMethods, _RestrictedTreeServerOnlyBase
+):
+    """Server-side enforcement via PermissionDenied only."""
+
+
+@hg_test
+# pyre-ignore[13]: T62487924
+class RestrictedTreeCombinedEnforcementTest(
     _RestrictedTreeTestMethods, _RestrictedTreeTestBase
 ):
-    """Server-side enforcement via PermissionDenied."""
+    """Client-side and server-side enforcement enabled together."""
 
     enable_server_acl_enforcement: bool = True
 
