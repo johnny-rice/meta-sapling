@@ -171,9 +171,11 @@ TreeInode::TreeInode(
     mode_t initialMode,
     const std::optional<InodeTimestamps>& initialTimestamps,
     DirContents&& dir,
-    std::optional<ObjectId> treeId)
+    std::optional<ObjectId> treeId,
+    bool isRestricted)
     : Base(ino, initialMode, initialTimestamps, parent, name),
-      contents_(std::in_place, std::move(dir), std::move(treeId)) {
+      contents_(std::in_place, std::move(dir), std::move(treeId)),
+      isRestricted_(isRestricted) {
   XDCHECK_NE(ino, kRootNodeId);
 }
 
@@ -217,7 +219,6 @@ ImmediateFuture<struct stat> TreeInode::stat(
             metadata.timestamps.mtime.asRawRepresentation(),
         });
   }
-
 #endif
 
   // For directories, nlink is the number of entries including the

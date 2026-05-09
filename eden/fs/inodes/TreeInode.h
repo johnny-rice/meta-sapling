@@ -9,15 +9,18 @@
 
 #include <folly/CancellationToken.h>
 #include <folly/File.h>
+#include <folly/Function.h>
 #include <folly/Portability.h>
 #include <folly/Synchronized.h>
 #include <folly/coro/safe/NowTask.h>
+#include <chrono>
 #include <optional>
 #include "eden/common/utils/FileOffset.h"
 #include "eden/common/utils/PathFuncs.h"
 #include "eden/fs/fuse/Invalidation.h"
 #include "eden/fs/inodes/DirEntry.h"
 #include "eden/fs/inodes/InodeBase.h"
+#include "eden/fs/inodes/Traverse.h"
 #include "eden/fs/model/Tree.h"
 #include "eden/fs/model/TreeAuxDataFwd.h"
 
@@ -94,6 +97,7 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
 
   /**
    * Construct an inode that only has backing in the Overlay area.
+   * Set isRestricted=true for directories denied by server-side path ACLs.
    */
   TreeInode(
       InodeNumber ino,
@@ -102,7 +106,8 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       mode_t initialMode,
       const std::optional<InodeTimestamps>& initialTimestamps,
       DirContents&& dir,
-      std::optional<ObjectId> treeId);
+      std::optional<ObjectId> treeId,
+      bool isRestricted = false);
 
   /**
    * Construct the root TreeInode from a source control commit's root.
@@ -234,10 +239,39 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
       off_t off,
       const ObjectFetchContextPtr& context);
 
+  /**
+   * Acquire a read lock on the contents.
+   */
+  folly::Synchronized<TreeInodeState>::ConstLockedPtr lockContentsRead() const {
+    return contents_.rlock();
+  }
+
+  /**
+   * Acquire a write lock on the contents.
+   */
+  folly::Synchronized<TreeInodeState>::LockedPtr lockContentsWrite() {
+    return contents_.wlock();
+  }
+
+  /**
+   * Temporary compatibility accessor for callers that have not yet been
+   * migrated to guarded or explicitly unchecked access.
+   */
   const folly::Synchronized<TreeInodeState>& getContents() const {
     return contents_;
   }
   folly::Synchronized<TreeInodeState>& getContents() {
+    return contents_;
+  }
+
+  /**
+   * Direct access to contents without going through the lockContents* helpers.
+   * Prefer lockContentsRead() / lockContentsWrite() for normal access.
+   */
+  const folly::Synchronized<TreeInodeState>& getContentsUnchecked() const {
+    return contents_;
+  }
+  folly::Synchronized<TreeInodeState>& getContentsUnchecked() {
     return contents_;
   }
 
@@ -1097,6 +1131,16 @@ class TreeInode final : public InodeBaseMetadata<DirContents> {
   void loadChildCleanUp(PathComponentPiece name, LoadChildCleanUp result);
 
   folly::Synchronized<TreeInodeState> contents_;
+
+  /**
+   * True if this directory is restricted by a path ACL.
+   * Stored separately from contents_ so restriction metadata can be plumbed
+   * through TreeInode independently from later access-control behavior.
+   *
+   * Derived from "has_acl" in the Sapling layer after a permission
+   * check confirms the user lacks access.
+   */
+  std::atomic<bool> isRestricted_{false};
 
   /**
    * Valid state transitions:
