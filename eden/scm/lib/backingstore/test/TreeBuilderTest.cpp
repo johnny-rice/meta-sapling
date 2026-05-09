@@ -73,7 +73,7 @@ TEST_F(TreeBuilderTest, AddFileEntry) {
       0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff, 0x00};
 
   builder.add_entry_with_aux_data(
-      fileName, hgNode, entryType, fileSize, sha1Hash, blake3Hash);
+      fileName, hgNode, entryType, fileSize, sha1Hash, blake3Hash, false);
 
   EXPECT_EQ(builder.num_files(), 1);
   EXPECT_EQ(builder.num_dirs(), 0);
@@ -107,7 +107,7 @@ TEST_F(TreeBuilderTest, AddDirectoryEntry) {
   TreeEntryType entryType = TreeEntryType::TREE;
 
   // Add the directory entry (we don't currently support dir aux data):
-  builder.add_entry(dirName, hgNode, entryType);
+  builder.add_entry(dirName, hgNode, entryType, false);
 
   EXPECT_EQ(builder.num_files(), 0);
   EXPECT_EQ(builder.num_dirs(), 1);
@@ -134,7 +134,7 @@ TEST_F(TreeBuilderTest, AddMultipleEntries) {
     std::array<uint8_t, 20> hgNode = {0};
     hgNode[0] = static_cast<uint8_t>(i);
 
-    builder.add_entry(fileNameStr, hgNode, TreeEntryType::REGULAR_FILE);
+    builder.add_entry(fileNameStr, hgNode, TreeEntryType::REGULAR_FILE, false);
   }
 
   // Add multiple directory entries
@@ -144,7 +144,7 @@ TEST_F(TreeBuilderTest, AddMultipleEntries) {
     std::array<uint8_t, 20> hgNode = {0};
     hgNode[1] = static_cast<uint8_t>(i);
 
-    builder.add_entry(dirNameStr, hgNode, TreeEntryType::TREE);
+    builder.add_entry(dirNameStr, hgNode, TreeEntryType::TREE, false);
   }
 
   EXPECT_EQ(builder.num_files(), 3);

@@ -123,12 +123,14 @@ class TreeEntry {
       TreeEntryType type,
       std::optional<uint64_t> size,
       std::optional<Hash20> contentSha1,
-      std::optional<Hash32> contentBlake3)
+      std::optional<Hash32> contentBlake3,
+      bool isRestricted = false)
       : type_(type),
         id_(std::move(id)),
         size_(size),
         contentSha1_(contentSha1),
-        contentBlake3_(contentBlake3) {}
+        contentBlake3_(contentBlake3),
+        isRestricted_(isRestricted) {}
 
   const ObjectId& getObjectId() const {
     return id_;
@@ -173,12 +175,17 @@ class TreeEntry {
     return contentBlake3_;
   }
 
+  bool isRestricted() const {
+    return isRestricted_;
+  }
+
  private:
   TreeEntryType type_;
   ObjectId id_;
   std::optional<uint64_t> size_;
   std::optional<Hash20> contentSha1_;
   std::optional<Hash32> contentBlake3_;
+  bool isRestricted_ = false;
 };
 
 } // namespace facebook::eden

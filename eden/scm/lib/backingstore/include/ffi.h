@@ -126,7 +126,8 @@ class TreeBuilder {
   void add_entry(
       rust::Str name,
       const std::array<uint8_t, 20>& hg_node,
-      facebook::eden::TreeEntryType ttype);
+      facebook::eden::TreeEntryType ttype,
+      bool is_restricted);
 
   // Add tree entry with aux data.
   void add_entry_with_aux_data(
@@ -135,7 +136,8 @@ class TreeBuilder {
       facebook::eden::TreeEntryType ttype,
       const uint64_t size,
       const std::array<uint8_t, 20>& sha1,
-      const std::array<uint8_t, 32>& blake3);
+      const std::array<uint8_t, 32>& blake3,
+      bool is_restricted);
 
   // Set aux data for tree itself (if available).
   void set_aux_data(const std::array<uint8_t, 32>& digest, uint64_t size);

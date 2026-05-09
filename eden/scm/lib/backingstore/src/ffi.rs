@@ -8,6 +8,7 @@
 //! Provides the c-bindings for `crate::backingstore`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -203,6 +204,7 @@ pub(crate) mod ffi {
             name: &str,
             hg_node: &[u8; 20],
             ttype: TreeEntryType,
+            is_restricted: bool,
         );
 
         fn add_entry_with_aux_data(
@@ -213,6 +215,7 @@ pub(crate) mod ffi {
             size: u64,
             sha1: &[u8; 20],
             blake3: &[u8; 32],
+            is_restricted: bool,
         );
 
         fn mark_missing(self: Pin<&mut TreeBuilder>);
@@ -489,6 +492,30 @@ pub fn sapling_backingstore_get_tree(
     ffi::GetTreeResult { error }
 }
 
+/// Build a set of restricted child directory HgIds from the tree's
+/// permission_denied_children(). Fail-open: if the initial call or
+/// individual entries error, log a warning and treat as unrestricted.
+fn build_restricted_set(tree: &dyn TreeEntry) -> HashSet<HgId> {
+    let iter = match tree.permission_denied_children() {
+        Ok(iter) => iter,
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                "error calling permission_denied_children; treating all children as unrestricted (fail-open)"
+            );
+            return HashSet::new();
+        }
+    };
+    iter.filter_map(|r| match r {
+        Ok((_, hgid, _)) => Some(hgid),
+        Err(e) => {
+            tracing::warn!(?e, "error checking permission_denied_children");
+            None
+        }
+    })
+    .collect()
+}
+
 // Convert the `TreeEntry` trait object into an EdenFS Tree by adding each entry to the TreeBuilder
 // object.
 fn add_tree_to_builder(
@@ -498,6 +525,15 @@ fn add_tree_to_builder(
     // TODO: Make the aux data available in `TreeEntry::iter()` so we don't have to do this HashMap business.
     let aux_map: HashMap<HgId, ScmStoreFileAuxData> =
         tree.file_aux_iter()?.collect::<anyhow::Result<_>>()?;
+
+    // Build a set of child directory IDs that the server denied access to
+    // (path ACL restriction). These are directories containing .slacl files.
+    //
+    // Naming mapping (B2): The Sapling layer uses "has_acl" / "permission_denied"
+    // to describe directories with access restrictions. EdenFS translates this
+    // to "is_restricted" / "isRestricted" to describe the access-denied behavior
+    // from the user's perspective.
+    let restricted_set: HashSet<HgId> = build_restricted_set(tree.as_ref());
 
     // Pre-allocate the per-entry storage.
     if let Some(hint) = tree.size_hint() {
@@ -519,6 +555,9 @@ fn add_tree_to_builder(
             }
         };
 
+        let is_restricted =
+            matches!(flag, TreeItemFlag::Directory) && restricted_set.contains(&node);
+
         if let Some(aux) = aux_map.get(&node) {
             builder.as_mut().add_entry_with_aux_data(
                 name.as_str(),
@@ -527,11 +566,12 @@ fn add_tree_to_builder(
                 aux.total_size,
                 aux.sha1.as_byte_array(),
                 aux.blake3.as_byte_array(),
+                is_restricted,
             );
         } else {
             builder
                 .as_mut()
-                .add_entry(name.as_str(), node.as_byte_array(), ttype);
+                .add_entry(name.as_str(), node.as_byte_array(), ttype, is_restricted);
         }
     }
 

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <optional>
 
+#include "eden/common/utils/PathFuncs.h"
 #include "eden/fs/model/TreeEntry.h"
 #include "eden/fs/testharness/TestUtil.h"
 #include "eden/fs/utils/EdenError.h"
@@ -160,4 +161,20 @@ TEST(TreeEntry, compareTreeEntryType) {
     EXPECT_FALSE(compareTreeEntryType(
         TreeEntryType::REGULAR_FILE, TreeEntryType::EXECUTABLE_FILE));
   }
+}
+
+TEST(TreeEntry, isRestrictedDefaultsFalse) {
+  TreeEntry entry(makeTestId("abc"), TreeEntryType::TREE);
+  EXPECT_FALSE(entry.isRestricted());
+}
+
+TEST(TreeEntry, isRestrictedSetTrue) {
+  TreeEntry entry(
+      makeTestId("abc"),
+      TreeEntryType::TREE,
+      std::nullopt,
+      std::nullopt,
+      std::nullopt,
+      /*isRestricted=*/true);
+  EXPECT_TRUE(entry.isRestricted());
 }

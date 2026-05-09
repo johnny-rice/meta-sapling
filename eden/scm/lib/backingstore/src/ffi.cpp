@@ -91,7 +91,8 @@ void sapling_backingstore_get_file_aux_batch_handler(
 void TreeBuilder::add_entry(
     rust::Str name,
     const std::array<uint8_t, 20>& hg_node,
-    facebook::eden::TreeEntryType ttype) {
+    facebook::eden::TreeEntryType ttype,
+    bool is_restricted) {
   emplace_entry(
       name,
       facebook::eden::TreeEntry{
@@ -100,6 +101,7 @@ void TreeBuilder::add_entry(
           std::nullopt,
           std::nullopt,
           std::nullopt,
+          is_restricted,
       });
 }
 
@@ -109,7 +111,8 @@ void TreeBuilder::add_entry_with_aux_data(
     facebook::eden::TreeEntryType ttype,
     const uint64_t size,
     const std::array<uint8_t, 20>& sha1,
-    const std::array<uint8_t, 32>& blake3) {
+    const std::array<uint8_t, 32>& blake3,
+    bool is_restricted) {
   emplace_entry(
       name,
       facebook::eden::TreeEntry{
@@ -118,6 +121,7 @@ void TreeBuilder::add_entry_with_aux_data(
           size,
           std::optional<facebook::eden::Hash20>(sha1),
           std::optional<facebook::eden::Hash32>(blake3),
+          is_restricted,
       });
 }
 
