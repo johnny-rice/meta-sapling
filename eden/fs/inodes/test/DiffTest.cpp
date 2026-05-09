@@ -90,6 +90,14 @@ class DiffTest {
     }
   }
 
+  explicit DiffTest(const FakeTreeBuilder& builder, bool useCoroutines = false)
+      : useCoroutines_{useCoroutines}, builder_{builder.clone()} {
+    mount_.initialize(builder_);
+    if (useCoroutines_) {
+      enableCoroutinesConfig(mount_);
+    }
+  }
+
   ScmStatus diff(
       bool listIgnored = false,
       folly::StringPiece systemWideIgnoreFileContents = "",
@@ -597,6 +605,32 @@ void testResetDirectoryAdded(bool loadInodes, bool useCoroutines) {
 TEST_P(DiffTestParam, resetDirectoryAdded) {
   testResetDirectoryAdded(true, GetParam());
   testResetDirectoryAdded(false, GetParam());
+}
+
+TEST_P(DiffTestParam, resetRestrictedLoadedDirectorySkipped) {
+  FakeTreeBuilder builder1;
+  builder1.setFile("src/main.c", "hello world");
+  builder1.setFile("restricted_dir/secret.txt", "secret");
+  builder1.setDirIsRestricted("restricted_dir");
+
+  DiffTest t{builder1, GetParam()};
+  auto restrictedInode = t.getMount().getTreeInode("restricted_dir"_relpath);
+  ASSERT_TRUE(restrictedInode->isRestricted());
+
+  auto builder2 = builder1.clone();
+  builder2.replaceFile("src/main.c", "hello world v2");
+  builder2.replaceFile("restricted_dir/secret.txt", "new secret");
+  builder2.setDirIsRestricted("restricted_dir");
+
+  // Load the restricted child before resetCommit() so diff goes through the
+  // loaded-inode DeferredDiffEntry path instead of the unloaded exact-match
+  // fast path.
+  auto result = t.resetCommitAndDiff(builder2, /*loadInodes=*/false);
+  EXPECT_THAT(*result.errors(), UnorderedElementsAre());
+  EXPECT_THAT(
+      *result.entries(),
+      UnorderedElementsAre(
+          std::make_pair("src/main.c", ScmFileStatus::MODIFIED)));
 }
 
 void testResetReplaceDirWithFile(bool loadInodes, bool useCoroutines) {

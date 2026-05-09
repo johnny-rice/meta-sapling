@@ -68,6 +68,13 @@ void processRemovedSide(
     ChildFutures& childFutures,
     RelativePathPiece currentPath,
     const Tree::value_type& scmEntry) {
+  if (scmEntry.second.isRestricted()) {
+    XLOGF(
+        DBG7,
+        "skipping restricted entry in diff: {}",
+        currentPath + scmEntry.first);
+    return;
+  }
   auto entryPath = currentPath + scmEntry.first;
   context->callback->removedPath(entryPath, scmEntry.second.getDtype());
   if (!scmEntry.second.isTree()) {
@@ -90,6 +97,13 @@ void processAddedSide(
     ChildFutures& childFutures,
     RelativePathPiece currentPath,
     const Tree::value_type& wdEntry) {
+  if (wdEntry.second.isRestricted()) {
+    XLOGF(
+        DBG7,
+        "skipping restricted entry in diff: {}",
+        currentPath + wdEntry.first);
+    return;
+  }
   auto entryPath = currentPath + wdEntry.first;
   context->callback->addedPath(entryPath, wdEntry.second.getDtype());
 
@@ -109,6 +123,16 @@ void processBothPresent(
     RelativePathPiece currentPath,
     const Tree::value_type& scmEntry,
     const Tree::value_type& wdEntry) {
+  // Skip the subtree if either side is restricted. Once one side is an ACL
+  // placeholder, diffing it against the other side would invent bogus
+  // adds/removes from missing contents.
+  if (scmEntry.second.isRestricted() || wdEntry.second.isRestricted()) {
+    XLOGF(
+        DBG7,
+        "skipping restricted entry in diff: {}",
+        currentPath + scmEntry.first);
+    return;
+  }
   auto entryPath = currentPath + scmEntry.first;
   bool isTreeSCM = scmEntry.second.isTree();
   bool isTreeWD = wdEntry.second.isTree();

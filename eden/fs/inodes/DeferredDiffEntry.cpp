@@ -124,6 +124,10 @@ class ModifiedDiffEntry : public DeferredDiffEntry {
       return diffRemovedTree(context_, getPath(), scmEntries_[0].getObjectId());
     }
 
+    if (treeInode->isRestricted()) {
+      return folly::unit;
+    }
+
     {
       auto contents = treeInode->lockContentsRead();
       if (!contents->isMaterialized()) {
