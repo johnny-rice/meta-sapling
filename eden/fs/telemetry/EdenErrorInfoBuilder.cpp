@@ -10,6 +10,7 @@
 #include <fmt/core.h>
 
 #include "eden/fs/telemetry/DaemonError.h"
+#include "eden/fs/telemetry/ThrowTraceCapture.h"
 
 namespace facebook::eden {
 
@@ -52,7 +53,21 @@ EdenErrorInfo EdenErrorInfoBuilder::create() {
   info.errorCode = errorCode_;
   info.errorName = std::move(errorName_);
   info.exceptionType = std::move(exceptionType_);
-  info.stackTrace = std::move(sourceLocation_);
+  auto trace = hasCapturedTrace_ ? getThrowSiteStackTrace() : std::nullopt;
+  if (trace.has_value()) {
+    info.stackTrace = fmt::format(
+        "Source: {}:{} in {}\n\nStack trace:\n{}",
+        sourceInfo_.file,
+        sourceInfo_.line,
+        sourceInfo_.func,
+        *trace);
+  } else {
+    info.stackTrace = fmt::format(
+        "Source: {}:{} in {}",
+        sourceInfo_.file,
+        sourceInfo_.line,
+        sourceInfo_.func);
+  }
   info.clientCommandName = std::move(clientCommandName_);
   info.inode = inode_;
   info.filePath = std::move(filePath_);
@@ -73,18 +88,7 @@ EdenErrorInfoBuilder::EdenErrorInfoBuilder(
       errorCode_(error.errorCode),
       errorName_(error.errorName),
       exceptionType_(error.exceptionType),
-      sourceLocation_(
-          error.stackTrace.has_value()
-              ? fmt::format(
-                    "Source: {}:{} in {}\n\nStack trace:\n{}",
-                    loc.file,
-                    loc.line,
-                    loc.func,
-                    *error.stackTrace)
-              : fmt::format(
-                    "Source: {}:{} in {}",
-                    loc.file,
-                    loc.line,
-                    loc.func)) {}
+      hasCapturedTrace_(error.hasCapturedTrace),
+      sourceInfo_(loc) {}
 
 } // namespace facebook::eden

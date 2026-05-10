@@ -42,7 +42,8 @@ class EdenErrorInfoBuilder {
   std::optional<int64_t> errorCode_;
   std::optional<std::string> errorName_;
   std::optional<std::string> exceptionType_;
-  std::string sourceLocation_;
+  bool hasCapturedTrace_ = false;
+  SourceInfo sourceInfo_;
   std::optional<std::string> clientCommandName_;
   std::optional<uint64_t> inode_;
   std::optional<std::string> filePath_;

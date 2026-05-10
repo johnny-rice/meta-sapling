@@ -14,6 +14,7 @@
 #include <folly/CPortability.h>
 
 #include "eden/fs/telemetry/ErrorArg.h"
+#include "eden/fs/telemetry/ThrowTraceCapture.h"
 
 using namespace facebook::eden;
 
@@ -95,4 +96,23 @@ TEST(EdenErrorInfoTest, InitializeThriftEdenErrorInfoWithSystemError) {
   EXPECT_TRUE(info.errorCode.has_value());
   EXPECT_TRUE(info.errorName.has_value());
   EXPECT_NE(info.exceptionType.value().find("system_error"), std::string::npos);
+}
+
+TEST(EdenErrorInfoTest, SymbolizationIsDeferredUntilCreate) {
+  try {
+    throw std::runtime_error("deferred test");
+  } catch (const std::exception& ex) {
+    // ErrorArg should NOT consume the trace — just record that one exists.
+    ErrorArg error(ex);
+    EXPECT_TRUE(error.hasCapturedTrace);
+
+    // Trace should still be available — ErrorArg only sets a flag,
+    // it doesn't call getThrowSiteStackTrace().
+    auto trace = getThrowSiteStackTrace();
+    ASSERT_TRUE(trace.has_value())
+        << "Trace should still be in thread-local storage after ErrorArg";
+
+    // After getThrowSiteStackTrace() consumed the trace, create()
+    // should still work but without a throw-site trace section.
+  }
 }

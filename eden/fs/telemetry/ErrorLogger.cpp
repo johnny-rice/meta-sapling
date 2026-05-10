@@ -10,6 +10,7 @@
 #include "eden/fs/config/EdenConfig.h"
 #include "eden/fs/config/ReloadableConfig.h"
 #include "eden/fs/telemetry/DaemonError.h"
+#include "eden/fs/telemetry/EdenErrorInfoBuilder.h"
 #include "eden/fs/telemetry/StackTraceUploader.h"
 
 namespace facebook::eden {
@@ -21,11 +22,12 @@ ErrorLogger::ErrorLogger(
     : EdenStructuredLogger(std::move(scribeLogger), std::move(sessionInfo)),
       config_(std::move(config)) {}
 
-void ErrorLogger::logEvent(DaemonError event) {
+void ErrorLogger::logEvent(EdenErrorInfoBuilder builder) {
   auto edenConfig = config_->getEdenConfig();
   if (!edenConfig->enableErrorLogging.getValue()) {
     return;
   }
+  auto event = builder.createEvent();
   if (event.info.stackTrace.has_value() &&
       edenConfig->enableStackTraceUpload.getValue()) {
     event.info.stackTrace =

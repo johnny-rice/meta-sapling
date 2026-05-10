@@ -13,15 +13,11 @@
 
 namespace facebook::eden {
 
+class EdenErrorInfoBuilder;
 class ReloadableConfig;
 class ScribeLogger;
-struct DaemonError;
 
-/**
- * StructuredLogger subclass for error telemetry. Provides a
- * logEvent(DaemonError) overload that checks enableErrorLogging
- * config and uploads stack traces to Manifold before logging.
- */
+// Logs structured error events to perfpipe_edenfs_errors for error telemetry.
 class ErrorLogger : public EdenStructuredLogger {
  public:
   ErrorLogger(
@@ -32,11 +28,19 @@ class ErrorLogger : public EdenStructuredLogger {
   ~ErrorLogger() override = default;
 
   /**
-   * Check config, upload stack trace to Manifold if enabled,
-   * and log a DaemonError event. No-op when enableErrorLogging
-   * is false.
+   * Log a structured error event to perfpipe_edenfs_errors.
+   * Must be called promptly from a catch block — the throw-site trace
+   * is in thread-local storage and will be overwritten by the next
+   * throw on this thread.
+   * Example:
+   *   logger->logEvent(
+   *       EdenErrorInfo::takeover(ex).withMountPoint(path));
+   *
+   * Stack trace symbolization, Manifold upload, and Scribe send only
+   * happen when enableErrorLogging is true. When off, returns with
+   * zero cost.
    */
-  void logEvent(DaemonError event);
+  void logEvent(EdenErrorInfoBuilder builder);
 
  private:
   std::shared_ptr<ReloadableConfig> config_;
