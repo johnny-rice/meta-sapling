@@ -92,6 +92,12 @@ pub struct AckPlan {
     pub normal_path_rdeps: Vec<String>,
 }
 
+/// Counts of znodes deleted by `unsafe_nuke`, keyed by DAG node type name.
+#[derive(Debug, Default)]
+pub struct NukeStats {
+    pub deleted_per_type: HashMap<String, u64>,
+}
+
 #[facet::facet]
 pub struct RepoDerivationQueues {
     configs_to_queues: HashMap<String, Arc<dyn DerivationQueue + Send + Sync>>,
@@ -162,6 +168,11 @@ pub trait DerivationQueue {
         ctx: &CoreContext,
         item_id: DagItemId,
     ) -> Result<(), InternalError>;
+
+    /// Delete every znode under this queue's `(repo_id, config)` for all DAG
+    /// node types. Intended for unwedging a stuck queue — caller should pause
+    /// the derivation service first. Aborts on the first Zeus error.
+    async fn unsafe_nuke(&self, ctx: &CoreContext) -> Result<NukeStats, InternalError>;
 
     async fn extend_deriving_ttl(
         &self,

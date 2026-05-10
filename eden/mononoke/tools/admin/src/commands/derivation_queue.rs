@@ -7,6 +7,7 @@
 
 mod enqueue;
 mod inspect;
+mod nuke;
 mod summary;
 mod unsafe_evict;
 
@@ -24,6 +25,7 @@ use metaconfig_types::RepoConfig;
 use metaconfig_types::RepoConfigRef;
 use mononoke_app::MononokeApp;
 use mononoke_app::args::RepoArgs;
+use nuke::NukeArgs;
 use repo_derivation_queues::RepoDerivationQueues;
 use repo_identity::RepoIdentity;
 use summary::SummaryArgs;
@@ -53,6 +55,8 @@ pub enum DerivationQueueSubcommand {
     UnsafeEvict(UnsafeEvictArgs),
     /// Inspect the Zelos DAG state of a specific item in the derivation queue
     Inspect(InspectArgs),
+    /// Delete every item in the derivation queue for this (repo, config). WARNING: nukes the entire queue. Pause the derivation service first.
+    UnsafeNuke(NukeArgs),
 }
 
 #[facet::container]
@@ -103,6 +107,9 @@ pub async fn run(app: MononokeApp, args: CommandArgs) -> Result<()> {
         }
         DerivationQueueSubcommand::Inspect(args) => {
             inspect::inspect(&ctx, &repo, config_name, args).await
+        }
+        DerivationQueueSubcommand::UnsafeNuke(args) => {
+            nuke::nuke(&ctx, &repo, config_name, args).await
         }
     }
 }
