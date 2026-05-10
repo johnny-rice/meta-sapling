@@ -167,9 +167,7 @@ function mononoke_cas_sync {
     --repo-name $HG_REPO_NAME \
     --mononoke-config-path "$TESTTMP/mononoke-config" \
     --tracing-test-format \
-     sync-loop --start-id "$START_ID" --batch-size 20 \
-     2>&1 | grep -vE '^[VDIWECFT][[:digit:]]{4} '
-  return "${PIPESTATUS[0]}"
+     sync-loop --start-id "$START_ID" --batch-size 20
 }
 
 
@@ -274,8 +272,7 @@ function mononoke_admin {
     "${COMMON_ARGS[@]}" \
     --mononoke-config-path "$TESTTMP"/mononoke-config \
     --tracing-test-format \
-    "$@" 2>&1 | grep -vE '^[VDIWECFT][[:digit:]]{4} '
-  return "${PIPESTATUS[0]}"
+    "$@"
 }
 
 function mononoke_import {
