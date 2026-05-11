@@ -17,15 +17,22 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use async_requests::types::AsynchronousRequestParams;
+use async_requests::types::AsynchronousRequestResult;
+use async_requests::types::DeriveBoundaries;
+use async_requests::types::DeriveSlice;
+use async_requests::types::RequestTypeName;
 use async_requests::types::ThriftAsynchronousRequestParams;
+use async_requests::types::ThriftAsynchronousRequestResult;
 use blobstore::Blobstore;
 use clap::Args;
 use context::CoreContext;
 use futures::stream;
 use futures::stream::StreamExt;
+use mononoke_types::ChangesetId;
 use mononoke_types::RepositoryId;
 use mononoke_types::Timestamp;
 use requests_table::BlobstoreKey;
+use requests_table::LongRunningRequestEntry;
 use requests_table::LongRunningRequestsQueue;
 use requests_table::RequestStatus;
 use requests_table::RowId;
@@ -33,13 +40,18 @@ use requests_table::SqlLongRunningRequestsQueue;
 
 use self::display::BackfillListRow;
 use self::display::display_backfill_list;
+use self::display::display_child_request_detail;
 use self::display::display_multi_repo_summary;
 use self::display::display_repo_detail;
 use self::display::display_single_repo_detail;
+use self::types::BackfillChildDisplayData;
+use self::types::BackfillChildParams;
+use self::types::BackfillChildResult;
 use self::types::BackfillDisplayData;
 use self::types::ChildCounts;
 use self::types::RepoDisplayData;
 use self::types::RepoStatus;
+use self::types::SliceSegmentDisplayData;
 
 /// How many backfills to load params for in parallel for the list view.
 const PARAMS_LOAD_CONCURRENCY: usize = 16;
@@ -174,10 +186,11 @@ async fn show_backfill_detail(
     let (request_id, request_type, root_status, created_at, args_blobstore_key, created_by) =
         match root_entry {
             Some(entry) => entry,
-            None => bail!(
-                "Invalid request ID: {} is not a backfill root request",
-                row_id.0
-            ),
+            None => {
+                show_backfill_child_request_detail(ctx, queue, blobstore, repo_names, row_id)
+                    .await?;
+                return Ok(());
+            }
         };
 
     let derived_data_type = load_derived_data_type(ctx, blobstore, &args_blobstore_key).await;
@@ -367,6 +380,134 @@ async fn show_backfill_detail(
             repo_names,
         );
     }
+
+    Ok(())
+}
+
+fn format_changeset_id(bytes: &[u8]) -> String {
+    ChangesetId::from_bytes(bytes)
+        .map(|cs_id| cs_id.to_string())
+        .unwrap_or_else(|e| format!("<invalid changeset id: {}>", e))
+}
+
+fn decode_child_params(
+    entry: &LongRunningRequestEntry,
+    params: &AsynchronousRequestParams,
+) -> Result<BackfillChildParams> {
+    match (entry.request_type.0.as_str(), params.thrift()) {
+        (DeriveBoundaries::NAME, ThriftAsynchronousRequestParams::derive_boundaries_params(p)) => {
+            Ok(BackfillChildParams::DeriveBoundaries {
+                repo_id: p.repo_id,
+                derived_data_type: p.derived_data_type.clone(),
+                boundary_cs_ids: p
+                    .boundary_cs_ids
+                    .iter()
+                    .map(|cs_id| format_changeset_id(cs_id.as_ref()))
+                    .collect(),
+                concurrency: p.concurrency,
+                use_predecessor_derivation: p.use_predecessor_derivation,
+                config_name: p.config_name.clone(),
+            })
+        }
+        (DeriveSlice::NAME, ThriftAsynchronousRequestParams::derive_slice_params(p)) => {
+            Ok(BackfillChildParams::DeriveSlice {
+                repo_id: p.repo_id,
+                derived_data_type: p.derived_data_type.clone(),
+                segments: p
+                    .segments
+                    .iter()
+                    .map(|segment| SliceSegmentDisplayData {
+                        head: format_changeset_id(segment.head.as_ref()),
+                        base: format_changeset_id(segment.base.as_ref()),
+                    })
+                    .collect(),
+                config_name: p.config_name.clone(),
+            })
+        }
+        (request_type, _) => bail!(
+            "Request ID {} has type {}, not derive_boundaries or derive_slice",
+            entry.id.0,
+            request_type,
+        ),
+    }
+}
+
+async fn load_child_result(
+    ctx: &CoreContext,
+    blobstore: &Arc<dyn Blobstore>,
+    entry: &LongRunningRequestEntry,
+) -> Result<Option<BackfillChildResult>> {
+    let Some(result_key) = &entry.result_blobstore_key else {
+        return Ok(None);
+    };
+
+    let result = AsynchronousRequestResult::load_from_key(ctx, blobstore, &result_key.0)
+        .await
+        .context("loading request result")?;
+
+    match (entry.request_type.0.as_str(), result.thrift()) {
+        (
+            DeriveBoundaries::NAME,
+            ThriftAsynchronousRequestResult::derive_boundaries_result(result),
+        ) => Ok(Some(BackfillChildResult::DeriveBoundaries {
+            derived_count: result.derived_count,
+            error_message: result.error_message.clone(),
+        })),
+        (DeriveSlice::NAME, ThriftAsynchronousRequestResult::derive_slice_result(result)) => {
+            Ok(Some(BackfillChildResult::DeriveSlice {
+                derived_count: result.derived_count,
+                error_message: result.error_message.clone(),
+            }))
+        }
+        (_, ThriftAsynchronousRequestResult::error(error)) => {
+            Ok(Some(BackfillChildResult::Error {
+                message: format!("{:?}", error),
+            }))
+        }
+        (request_type, result) => bail!(
+            "Request ID {} has type {}, but result blob contains {:?}",
+            entry.id.0,
+            request_type,
+            result,
+        ),
+    }
+}
+
+async fn show_backfill_child_request_detail(
+    ctx: &CoreContext,
+    queue: &impl LongRunningRequestsQueue,
+    blobstore: &Arc<dyn Blobstore>,
+    repo_names: &HashMap<RepositoryId, String>,
+    row_id: &RowId,
+) -> Result<()> {
+    let entry = queue
+        .get_request_entry_by_id(ctx, row_id)
+        .await
+        .context("fetching request entry")?
+        .ok_or_else(|| anyhow::anyhow!("Invalid request ID: {} does not exist", row_id.0))?;
+
+    if entry.request_type.0 != DeriveBoundaries::NAME && entry.request_type.0 != DeriveSlice::NAME {
+        bail!(
+            "Invalid request ID: {} is not a backfill root, derive_boundaries, or derive_slice request",
+            row_id.0
+        );
+    }
+
+    let params =
+        AsynchronousRequestParams::load_from_key(ctx, blobstore, &entry.args_blobstore_key.0)
+            .await
+            .context("loading request params")?;
+    let params = decode_child_params(&entry, &params)?;
+    let result = load_child_result(ctx, blobstore, &entry).await?;
+
+    display_child_request_detail(
+        &BackfillChildDisplayData {
+            entry,
+            params,
+            result,
+        },
+        repo_names,
+    );
 
     Ok(())
 }

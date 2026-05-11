@@ -1377,7 +1377,7 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
         Ok(Some(entry))
     }
 
-    async fn test_get_request_entry_by_id(
+    async fn get_request_entry_by_id(
         &self,
         ctx: &CoreContext,
         id: &RowId,
@@ -1392,6 +1392,14 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
             None => Ok(None),
             Some(row) => Ok(Some(row_to_entry(row))),
         }
+    }
+
+    async fn test_get_request_entry_by_id(
+        &self,
+        ctx: &CoreContext,
+        id: &RowId,
+    ) -> Result<Option<LongRunningRequestEntry>> {
+        self.get_request_entry_by_id(ctx, id).await
     }
 
     async fn mark_in_progress(

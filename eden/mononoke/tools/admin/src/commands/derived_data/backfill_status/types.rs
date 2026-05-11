@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use mononoke_types::Timestamp;
+use requests_table::LongRunningRequestEntry;
 use requests_table::RequestStatus;
 use requests_table::RowId;
 
@@ -107,6 +108,50 @@ pub(super) struct RepoDisplayData {
     pub total_requests: usize,
     pub status_counts: Vec<(RequestStatus, usize)>,
     pub type_breakdown: Vec<(String, Vec<(RequestStatus, usize)>)>,
+}
+
+/// Decoded parameters for an individual backfill child request.
+pub(super) enum BackfillChildParams {
+    DeriveBoundaries {
+        repo_id: i64,
+        derived_data_type: String,
+        boundary_cs_ids: Vec<String>,
+        concurrency: i32,
+        use_predecessor_derivation: bool,
+        config_name: Option<String>,
+    },
+    DeriveSlice {
+        repo_id: i64,
+        derived_data_type: String,
+        segments: Vec<SliceSegmentDisplayData>,
+        config_name: Option<String>,
+    },
+}
+
+pub(super) struct SliceSegmentDisplayData {
+    pub head: String,
+    pub base: String,
+}
+
+/// Decoded result for an individual backfill child request, when available.
+pub(super) enum BackfillChildResult {
+    DeriveBoundaries {
+        derived_count: i64,
+        error_message: Option<String>,
+    },
+    DeriveSlice {
+        derived_count: i64,
+        error_message: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+pub(super) struct BackfillChildDisplayData {
+    pub entry: LongRunningRequestEntry,
+    pub params: BackfillChildParams,
+    pub result: Option<BackfillChildResult>,
 }
 
 /// Counts of child requests grouped by their effective state. All four

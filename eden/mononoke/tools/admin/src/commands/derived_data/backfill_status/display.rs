@@ -21,6 +21,9 @@ use prettytable::format;
 use requests_table::RequestStatus;
 use requests_table::RowId;
 
+use super::types::BackfillChildDisplayData;
+use super::types::BackfillChildParams;
+use super::types::BackfillChildResult;
 use super::types::BackfillDisplayData;
 use super::types::RepoDisplayData;
 use super::types::RepoStatus;
@@ -56,6 +59,14 @@ fn format_repo(repo_id: i64, repo_names: &HashMap<RepositoryId, String>) -> Stri
         Some(name) => format!("{} ({})", name, repo_id),
         None => repo_id.to_string(),
     }
+}
+
+fn format_optional_timestamp(ts: Option<&Timestamp>) -> String {
+    ts.map(format_timestamp).unwrap_or_else(|| "-".to_string())
+}
+
+fn format_optional_str(value: Option<&str>) -> &str {
+    value.unwrap_or("-")
 }
 
 /// Merge raw `(RequestStatus, count)` pairs by their display label,
@@ -252,6 +263,160 @@ pub(super) fn display_repo_detail(data: &RepoDisplayData) {
 
     print_progress_section(data.total_requests, &data.status_counts);
     print_type_breakdown_table(&data.status_counts, &data.type_breakdown);
+}
+
+/// Display an individual derive_boundaries or derive_slice request.
+pub(super) fn display_child_request_detail(
+    data: &BackfillChildDisplayData,
+    repo_names: &HashMap<RepositoryId, String>,
+) {
+    println!("\nBackfill Child Request: {}", data.entry.id.0);
+    println!("{}", "━".repeat(80));
+    println!();
+
+    println!("Request Details:");
+    println!("  Request ID:        {}", data.entry.id.0);
+    println!("  Request Type:      {}", data.entry.request_type);
+    println!("  Status:            {}", data.entry.status);
+    if let Some(root_request_id) = data.entry.root_request_id {
+        println!("  Root Request ID:   {}", root_request_id.0);
+    } else {
+        println!("  Root Request ID:   -");
+    }
+    if let Some(repo_id) = data.entry.repo_id {
+        println!(
+            "  Repo:              {}",
+            format_repo(repo_id.id() as i64, repo_names)
+        );
+    } else {
+        println!("  Repo:              -");
+    }
+    println!(
+        "  Created At:        {}",
+        format_timestamp(&data.entry.created_at)
+    );
+    println!(
+        "  Started At:        {}",
+        format_optional_timestamp(data.entry.started_processing_at.as_ref())
+    );
+    println!(
+        "  Last Heartbeat:    {}",
+        format_optional_timestamp(data.entry.inprogress_last_updated_at.as_ref())
+    );
+    println!(
+        "  Ready At:          {}",
+        format_optional_timestamp(data.entry.ready_at.as_ref())
+    );
+    println!(
+        "  Failed At:         {}",
+        format_optional_timestamp(data.entry.failed_at.as_ref())
+    );
+    println!(
+        "  Polled At:         {}",
+        format_optional_timestamp(data.entry.polled_at.as_ref())
+    );
+    println!(
+        "  Claimed By:        {}",
+        data.entry
+            .claimed_by
+            .as_ref()
+            .map(|c| c.0.as_str())
+            .unwrap_or("-")
+    );
+    println!(
+        "  Retries:           {}",
+        data.entry
+            .num_retries
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  Submitted By:      {}",
+        format_optional_str(data.entry.created_by.as_deref())
+    );
+    println!("  Args Blob:         {}", data.entry.args_blobstore_key);
+    println!(
+        "  Result Blob:       {}",
+        data.entry
+            .result_blobstore_key
+            .as_ref()
+            .map(|key| key.0.as_str())
+            .unwrap_or("-")
+    );
+    println!();
+
+    match &data.params {
+        BackfillChildParams::DeriveBoundaries {
+            repo_id,
+            derived_data_type,
+            boundary_cs_ids,
+            concurrency,
+            use_predecessor_derivation,
+            config_name,
+        } => {
+            println!("Derive Boundaries Params:");
+            println!("  Repo:              {}", format_repo(*repo_id, repo_names));
+            println!("  Derived Data Type: {}", derived_data_type);
+            println!(
+                "  Config Name:       {}",
+                format_optional_str(config_name.as_deref())
+            );
+            println!("  Concurrency:       {}", concurrency);
+            println!("  Use Predecessor:   {}", use_predecessor_derivation);
+            println!(
+                "  Boundary Count:    {}",
+                format_number(boundary_cs_ids.len())
+            );
+            println!("  Boundary Changesets:");
+            for cs_id in boundary_cs_ids {
+                println!("    {}", cs_id);
+            }
+        }
+        BackfillChildParams::DeriveSlice {
+            repo_id,
+            derived_data_type,
+            segments,
+            config_name,
+        } => {
+            println!("Derive Slice Params:");
+            println!("  Repo:              {}", format_repo(*repo_id, repo_names));
+            println!("  Derived Data Type: {}", derived_data_type);
+            println!(
+                "  Config Name:       {}",
+                format_optional_str(config_name.as_deref())
+            );
+            println!("  Segment Count:     {}", format_number(segments.len()));
+            println!("  Segments:");
+            for (idx, segment) in segments.iter().enumerate() {
+                println!("    {}. head: {}", idx + 1, segment.head);
+                println!("       base: {}", segment.base);
+            }
+        }
+    }
+
+    if let Some(result) = &data.result {
+        println!();
+        println!("Result:");
+        match result {
+            BackfillChildResult::DeriveBoundaries {
+                derived_count,
+                error_message,
+            }
+            | BackfillChildResult::DeriveSlice {
+                derived_count,
+                error_message,
+            } => {
+                println!("  Derived Count:     {}", derived_count);
+                println!(
+                    "  Error Message:     {}",
+                    format_optional_str(error_message.as_deref())
+                );
+            }
+            BackfillChildResult::Error { message } => {
+                println!("  Error Message:     {}", message);
+            }
+        }
+    }
 }
 
 fn print_progress_section(total_requests: usize, status_counts: &[(RequestStatus, usize)]) {

@@ -102,7 +102,17 @@ pub trait LongRunningRequestsQueue: Send + Sync {
         request_type_filter: &QueueRequestTypeFilter,
     ) -> Result<Option<LongRunningRequestEntry>>;
 
-    /// Get the full request object entry by id
+    /// Get the full request object entry by id.
+    ///
+    /// This does not take `request_type`, so callers should only use it for
+    /// diagnostics or cases where the type is expected to be read from the row.
+    async fn get_request_entry_by_id(
+        &self,
+        ctx: &CoreContext,
+        id: &RowId,
+    ) -> Result<Option<LongRunningRequestEntry>>;
+
+    /// Get the full request object entry by id.
     /// Since this does not take `request_type`, it is
     /// mainly intended to be used in tests (`request_type`
     /// is a type-safety feature)
