@@ -522,7 +522,7 @@ pub async fn calculate_delta_size<'a, R: MononokeRepo>(
         .collect();
     let profile_configs_change =
         calculate_profile_config_change(ctx, monitor, current, other, sparse_config_change).await?;
-    sizes.extend(profile_configs_change.into_iter());
+    sizes.extend(profile_configs_change);
     Ok(sizes
         .into_iter()
         .filter(|(_, size)| {

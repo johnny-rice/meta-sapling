@@ -1714,8 +1714,8 @@ impl<R: PhasesRef + CommitGraphRef + Clone> RepoContext<R> {
             queue = new_draft.clone();
 
             // update draft & public
-            public.extend(new_public.into_iter());
-            draft.extend(new_draft.into_iter());
+            public.extend(new_public);
+            draft.extend(new_draft);
         }
 
         Ok(Stack {
@@ -1928,7 +1928,7 @@ impl<R: MononokeRepo> RepoContext<R> {
         let all_git_ids: Vec<_> = git_ids
             .iter()
             .cloned()
-            .chain(git_master_heads.clone().into_iter())
+            .chain(git_master_heads.clone())
             .collect();
         let git_to_bonsai: HashMap<GitSha1, ChangesetId> =
             get_git_bonsai_mapping(self.ctx().clone(), self, all_git_ids)
