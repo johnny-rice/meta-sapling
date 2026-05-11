@@ -33,3 +33,4 @@ CREATE INDEX IF NOT EXISTS `long_running_request_queue_abandoned_request_index_a
 CREATE INDEX IF NOT EXISTS `long_running_request_queue_list_requests` ON `long_running_request_queue` (`status`, `repo_id`, `inprogress_last_updated_at`, `created_at`);
 CREATE INDEX IF NOT EXISTS `long_running_request_queue_list_requests_any` ON `long_running_request_queue` (`status`, `inprogress_last_updated_at`, `created_at`);
 CREATE INDEX IF NOT EXISTS `long_running_request_queue_root_request` ON `long_running_request_queue` (`root_request_id`);
+CREATE UNIQUE INDEX IF NOT EXISTS `long_running_request_queue_root_request_dedupe` ON `long_running_request_queue` (`root_request_id`, `request_type`, `repo_id`, `args_blobstore_key`);

@@ -502,6 +502,21 @@ mononoke_queries! {
         "
     }
 
+    read AddRequestWithRepoAndRootIfAbsent(request_type: RequestType, repo_id: RepositoryId, args_blobstore_key: BlobstoreKey, created_at: Timestamp, root_request_id: RowId, created_by: Option<String>) -> (RowId) {
+        mysql("INSERT INTO long_running_request_queue
+            (request_type, repo_id, args_blobstore_key, status, created_at, root_request_id, created_by)
+         VALUES ({request_type}, {repo_id}, {args_blobstore_key}, 'new', {created_at}, {root_request_id}, {created_by})
+         ON DUPLICATE KEY UPDATE id = id
+         RETURNING id
+        ")
+        sqlite("INSERT INTO long_running_request_queue
+            (request_type, repo_id, args_blobstore_key, status, created_at, root_request_id, created_by)
+         VALUES ({request_type}, {repo_id}, {args_blobstore_key}, 'new', {created_at}, {root_request_id}, {created_by})
+         ON CONFLICT(root_request_id, request_type, repo_id, args_blobstore_key) DO UPDATE SET id = id
+         RETURNING id
+        ")
+    }
+
     write AddRequestWithRoot(request_type: RequestType, args_blobstore_key: BlobstoreKey, created_at: Timestamp, root_request_id: RowId, created_by: Option<String>) {
         none,
         "INSERT INTO long_running_request_queue
@@ -970,8 +985,8 @@ mononoke_queries! {
         request_id: RowId,
         depends_on_request_id: RowId,
     ) {
-        none,
-        "INSERT INTO long_running_request_dependencies
+        insert_or_ignore,
+        "{insert_or_ignore} INTO long_running_request_dependencies
          (request_id, depends_on_request_id)
          VALUES ({request_id}, {depends_on_request_id})
         "
@@ -1842,9 +1857,9 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
     ) -> Result<RowId> {
         let created_by_owned = created_by.map(|s| s.to_string());
         let now = Timestamp::now();
-        let res = match &repo_id {
+        match repo_id {
             Some(repo_id) => {
-                AddRequestWithRepoAndRoot::query(
+                let rows = AddRequestWithRepoAndRootIfAbsent::query(
                     &self.connections.write_connection,
                     ctx.sql_query_telemetry(),
                     request_type,
@@ -1854,10 +1869,16 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
                     root_request_id,
                     &created_by_owned,
                 )
-                .await?
+                .await?;
+                rows.into_iter()
+                    .next()
+                    .map(|(row_id,)| row_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Failed to find request of type {}", request_type)
+                    })
             }
             None => {
-                AddRequestWithRoot::query(
+                let res = AddRequestWithRoot::query(
                     &self.connections.write_connection,
                     ctx.sql_query_telemetry(),
                     request_type,
@@ -1866,13 +1887,12 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
                     root_request_id,
                     &created_by_owned,
                 )
-                .await?
+                .await?;
+                match res.last_insert_id() {
+                    Some(last_insert_id) if res.affected_rows() == 1 => Ok(RowId(last_insert_id)),
+                    _ => bail!("Failed to insert a new request of type {}", request_type),
+                }
             }
-        };
-
-        match res.last_insert_id() {
-            Some(last_insert_id) if res.affected_rows() == 1 => Ok(RowId(last_insert_id)),
-            _ => bail!("Failed to insert a new request of type {}", request_type),
         }
     }
 
@@ -1894,9 +1914,9 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
 
         let created_by_owned = created_by.map(|s| s.to_string());
         let now = Timestamp::now();
-        let (mut txn, res) = match &repo_id {
+        let (mut txn, row_id) = match repo_id {
             Some(repo_id) => {
-                AddRequestWithRepoAndRoot::query_with_transaction(
+                let (txn, rows) = AddRequestWithRepoAndRootIfAbsent::query_with_transaction(
                     txn,
                     request_type,
                     repo_id,
@@ -1905,10 +1925,18 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
                     root_request_id,
                     &created_by_owned,
                 )
-                .await?
+                .await?;
+                let row_id = rows
+                    .into_iter()
+                    .next()
+                    .map(|(row_id,)| row_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Failed to find request of type {}", request_type)
+                    })?;
+                (txn, row_id)
             }
             None => {
-                AddRequestWithRoot::query_with_transaction(
+                let (txn, res) = AddRequestWithRoot::query_with_transaction(
                     txn,
                     request_type,
                     args_blobstore_key,
@@ -1916,13 +1944,13 @@ impl LongRunningRequestsQueue for SqlLongRunningRequestsQueue {
                     root_request_id,
                     &created_by_owned,
                 )
-                .await?
+                .await?;
+                let row_id = match res.last_insert_id() {
+                    Some(last_insert_id) if res.affected_rows() == 1 => RowId(last_insert_id),
+                    _ => bail!("Failed to insert a new request of type {}", request_type),
+                };
+                (txn, row_id)
             }
-        };
-
-        let row_id = match res.last_insert_id() {
-            Some(last_insert_id) if res.affected_rows() == 1 => RowId(last_insert_id),
-            _ => bail!("Failed to insert a new request of type {}", request_type),
         };
 
         for dep_id in depends_on {
@@ -2616,6 +2644,105 @@ mod test {
         assert_eq!(entry.0.repo_id.unwrap(), repo_id);
         assert_eq!(entry.0.status, RequestStatus::InProgress);
         assert!((entry.1.since_seconds() - now.since_seconds()) < 1);
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_root_request_enqueue_is_idempotent(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let queue = SqlLongRunningRequestsQueue::with_sqlite_in_memory()?;
+        let repo_id = RepositoryId::new(0);
+        let root_id = queue
+            .add_request(
+                &ctx,
+                &RequestType("derive_backfill".to_string()),
+                Some(&repo_id),
+                &BlobstoreKey("root-key".to_string()),
+                None,
+            )
+            .await?;
+        let request_type = RequestType("derive_boundaries".to_string());
+        let blobstore_key = BlobstoreKey("boundary-key".to_string());
+
+        let first_id = queue
+            .add_request_with_root(
+                &ctx,
+                &request_type,
+                Some(&repo_id),
+                &blobstore_key,
+                &root_id,
+                None,
+            )
+            .await?;
+        let second_id = queue
+            .add_request_with_root(
+                &ctx,
+                &request_type,
+                Some(&repo_id),
+                &blobstore_key,
+                &root_id,
+                None,
+            )
+            .await?;
+
+        assert_eq!(first_id, second_id);
+
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn test_root_request_dependencies_are_idempotent(fb: FacebookInit) -> Result<()> {
+        let ctx = CoreContext::test_mock(fb);
+        let queue = SqlLongRunningRequestsQueue::with_sqlite_in_memory()?;
+        let repo_id = RepositoryId::new(0);
+        let root_id = queue
+            .add_request(
+                &ctx,
+                &RequestType("derive_backfill".to_string()),
+                Some(&repo_id),
+                &BlobstoreKey("root-key".to_string()),
+                None,
+            )
+            .await?;
+        let dep_id = queue
+            .add_request(
+                &ctx,
+                &RequestType("derive_boundaries".to_string()),
+                Some(&repo_id),
+                &BlobstoreKey("boundary-key".to_string()),
+                None,
+            )
+            .await?;
+        let request_type = RequestType("derive_slice".to_string());
+        let blobstore_key = BlobstoreKey("slice-key".to_string());
+
+        let first_id = queue
+            .add_request_with_dependencies_and_root(
+                &ctx,
+                &request_type,
+                Some(&repo_id),
+                &blobstore_key,
+                &[dep_id],
+                &root_id,
+                None,
+            )
+            .await?;
+        let second_id = queue
+            .add_request_with_dependencies_and_root(
+                &ctx,
+                &request_type,
+                Some(&repo_id),
+                &blobstore_key,
+                &[dep_id],
+                &root_id,
+                None,
+            )
+            .await?;
+        let dependencies = queue.get_dependencies(&ctx, &first_id).await?;
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(dependencies, vec![dep_id]);
 
         Ok(())
     }

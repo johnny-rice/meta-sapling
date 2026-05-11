@@ -238,7 +238,8 @@ pub trait LongRunningRequestsQueue: Send + Sync {
     ) -> Result<i64>;
 
     /// Schedule an execution of a request with a root_request_id linking it
-    /// to the top-level request that spawned it.
+    /// to the top-level request that spawned it. For repo-scoped requests, if
+    /// the same child request was already enqueued, return the existing row id.
     async fn add_request_with_root(
         &self,
         ctx: &CoreContext,
@@ -249,7 +250,9 @@ pub trait LongRunningRequestsQueue: Send + Sync {
         created_by: Option<&str>,
     ) -> Result<RowId>;
 
-    /// Add a request with dependencies and a root_request_id.
+    /// Add a request with dependencies and a root_request_id. For repo-scoped
+    /// requests, if the same child request was already enqueued, return the
+    /// existing row id and add dependencies idempotently.
     async fn add_request_with_dependencies_and_root(
         &self,
         ctx: &CoreContext,
