@@ -305,7 +305,6 @@ mod tests {
             path_acls: path_acls_map,
             use_manifest_id_cache: false,
             cache_update_interval_ms: 100,
-            conditional_enforcement_acls: Vec::new(),
             ..Default::default()
         };
 

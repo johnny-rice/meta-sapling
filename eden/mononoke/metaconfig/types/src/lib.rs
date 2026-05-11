@@ -2495,10 +2495,6 @@ pub struct RestrictedPathsConfig {
     pub cache_update_interval_ms: u64,
     /// Soft restricted paths configuration
     pub soft_path_acls: Vec<SoftRestrictedPathConfig>,
-    /// ACLs to conditionally enable enforcement of restricted paths on the server.
-    /// Unauthorized access to restricted paths will be denied if the client
-    /// belongs to any of these ACLs.
-    pub conditional_enforcement_acls: Vec<MononokeIdentity>,
     /// Group name for tooling that should be allowlisted for all restricted paths.
     pub tooling_allowlist_group: Option<String>,
     /// Group name for tooling that is allowlisted during rollout for all restricted paths.
@@ -2507,7 +2503,6 @@ pub struct RestrictedPathsConfig {
     /// Name of the ACL files (default: ".slacl")
     pub acl_file_name: String,
     /// Condition sets for conditional enforcement. OR across sets, AND within.
-    /// Replaces conditional_enforcement_acls.
     pub enforcement_condition_sets: Vec<EnforcementConditionSet>,
     /// Master kill switch for path ACL enforcement.
     /// Defaults to `false` so a repo with no explicit value gets no enforcement.
@@ -2525,7 +2520,6 @@ impl Default for RestrictedPathsConfig {
             use_manifest_id_cache: true,
             cache_update_interval_ms: 1000,
             soft_path_acls: Vec::new(),
-            conditional_enforcement_acls: Vec::new(),
             tooling_allowlist_group: None,
             rollout_allowlist_group: None,
             acl_file_name: DEFAULT_ACL_FILE_NAME.to_string(),

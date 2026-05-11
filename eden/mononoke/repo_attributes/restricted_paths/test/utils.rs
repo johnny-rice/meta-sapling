@@ -85,10 +85,10 @@ pub struct RestrictedPathsTestData {
     expected_manifest_entries: Option<Vec<RestrictedPathManifestIdEntry>>,
     // The scuba logs you expect to be logged after the test runs
     expected_scuba_logs: Option<Vec<ScubaAccessLogSample>>,
-    /// Enforcement scenarios: (conditional_enforcement_acls, expect_enforcement)
-    /// For each scenario, a new repo is built with those condition enforcement
-    /// ACLs and the `should_enforce_restriction method is called to verify behavior.
-    enforcement_scenarios: Vec<(Vec<MononokeIdentity>, bool)>,
+    /// Enforcement scenarios: (enforcement_condition_sets, expect_enforcement).
+    /// For each scenario, a new repo is built with those condition sets and
+    /// access APIs are called to verify whether enforcement is triggered.
+    enforcement_scenarios: Vec<(Vec<EnforcementConditionSet>, bool)>,
     /// Config-backed restrictions written into `RestrictedPathsConfig.path_acls`.
     config_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
     /// AclManifest-backed restrictions materialized as `.slacl` files.
@@ -113,10 +113,10 @@ pub struct RestrictedPathsTestDataBuilder {
     file_path_changes: Vec<(String, Option<String>)>,
     expected_manifest_entries: Option<Vec<RestrictedPathManifestIdEntry>>,
     expected_scuba_logs: Option<Vec<ScubaAccessLogSample>>,
-    /// List of (conditional_enforcement_acls, expect_enforcement) tuples.
-    /// The test will run for each scenario, applying the ACLs and verifying
-    /// if enforcement is or isn't triggered as expected.
-    enforcement_scenarios: Vec<(Vec<MononokeIdentity>, bool)>,
+    /// List of (enforcement_condition_sets, expect_enforcement) tuples.
+    /// The test will run for each scenario, applying the condition sets and
+    /// verifying if enforcement is or isn't triggered as expected.
+    enforcement_scenarios: Vec<(Vec<EnforcementConditionSet>, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -445,21 +445,9 @@ impl RestrictedPathsTestDataBuilder {
         self
     }
 
-    /// Configure enforcement scenarios to test.
-    /// Each tuple is (conditional_enforcement_acls, expect_enforcement):
-    /// - conditional_enforcement_acls: The ACL identities to use for conditional enforcement
-    /// - expect_enforcement: true = expect enforcement triggered, false = expect no enforcement
-    ///
-    /// Example:
-    /// ```
-    /// .with_enforcement_scenarios(vec![
-    ///     (vec![], false),  // No ACLs = no enforcement
-    ///     (vec![MononokeIdentity::new("GROUP", "enforcement_acl")], true),  // Matching ACL = enforcement
-    /// ])
-    /// ```
     pub fn with_enforcement_scenarios(
         mut self,
-        scenarios: Vec<(Vec<MononokeIdentity>, bool)>,
+        scenarios: Vec<(Vec<EnforcementConditionSet>, bool)>,
     ) -> Self {
         self.enforcement_scenarios = scenarios;
         self
@@ -534,20 +522,14 @@ impl RestrictedPathsTestData {
         // only applies to the current thread.
 
         // Run without enforcement scenarios
-        self.run_restricted_paths_test_inner(0, &[], &[], false)
-            .await?;
+        self.run_restricted_paths_test_inner(0, &[], false).await?;
 
         // Run enforcement testing for each scenario
         for (scenario_idx, (conditions, expect_enforcement)) in
             self.enforcement_scenarios.iter().enumerate()
         {
-            self.run_restricted_paths_test_inner(
-                scenario_idx + 1,
-                conditions,
-                &[],
-                *expect_enforcement,
-            )
-            .await?;
+            self.run_restricted_paths_test_inner(scenario_idx + 1, conditions, *expect_enforcement)
+                .await?;
         }
 
         Ok(())
@@ -556,9 +538,9 @@ impl RestrictedPathsTestData {
     /// Runs the standard access scenario and returns the Scuba rows it emitted.
     pub async fn observe_restricted_paths_scenario(
         &self,
-        conditional_enforcement_acls: &[MononokeIdentity],
+        enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<RestrictedPathsScenarioResult> {
-        self.run_restricted_paths_test_inner(0, conditional_enforcement_acls, &[], false)
+        self.run_restricted_paths_test_inner(0, enforcement_condition_sets, false)
             .await
     }
 
@@ -567,11 +549,9 @@ impl RestrictedPathsTestData {
         &self,
         path: NonRootMPath,
         cs_id: Option<ChangesetId>,
-        conditional_enforcement_acls: &[MononokeIdentity],
+        enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<RestrictedPathsScenarioResult> {
-        let scenario = self
-            .setup_scenario_repo(conditional_enforcement_acls, &[])
-            .await?;
+        let scenario = self.setup_scenario_repo(enforcement_condition_sets).await?;
 
         scenario
             .repo
@@ -591,11 +571,9 @@ impl RestrictedPathsTestData {
         manifest_id: ManifestId,
         manifest_type: ManifestType,
         cs_id: Option<ChangesetId>,
-        conditional_enforcement_acls: &[MononokeIdentity],
+        enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<RestrictedPathsScenarioResult> {
-        let scenario = self
-            .setup_scenario_repo(conditional_enforcement_acls, &[])
-            .await?;
+        let scenario = self.setup_scenario_repo(enforcement_condition_sets).await?;
 
         let mut commit_ctx = CreateCommitContext::new_root(&self.ctx, &scenario.repo);
         for (path, content) in &self.file_path_changes {
@@ -635,9 +613,7 @@ impl RestrictedPathsTestData {
         path: NonRootMPath,
         enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<bool> {
-        let scenario = self
-            .setup_scenario_repo(&[], enforcement_condition_sets)
-            .await?;
+        let scenario = self.setup_scenario_repo(enforcement_condition_sets).await?;
 
         let mpath = MPath::from(path);
         let result = spawn_enforce_restricted_path_access(
@@ -658,25 +634,22 @@ impl RestrictedPathsTestData {
     }
 
     /// Run restricted paths testing for a single scenario.
-    /// Creates a repo with the given conditional enforcement ACLs and runs all access operations.
+    /// Creates a repo with the given enforcement condition sets and runs all access operations.
     /// If expect_enforcement is true, expects an AuthorizationError from the access operations.
     async fn run_restricted_paths_test_inner(
         &self,
         scenario_idx: usize,
-        conditional_enforcement_acls: &[MononokeIdentity],
         enforcement_condition_sets: &[EnforcementConditionSet],
         expect_enforcement: bool,
     ) -> Result<RestrictedPathsScenarioResult> {
         println!(
-            "Running scenario {scenario_idx} with expect_enforcement: {expect_enforcement}, conditional_enforcement_acls: {conditional_enforcement_acls:#?}, and enforcement_condition_sets: {enforcement_condition_sets:#?}"
+            "Running scenario {scenario_idx} with expect_enforcement: {expect_enforcement} and enforcement_condition_sets: {enforcement_condition_sets:#?}"
         );
         // Set up a fresh repo and log file for this scenario.
         let RestrictedPathsScenario {
             repo: scenario_repo,
             log_path,
-        } = self
-            .setup_scenario_repo(conditional_enforcement_acls, enforcement_condition_sets)
-            .await?;
+        } = self.setup_scenario_repo(enforcement_condition_sets).await?;
 
         // Create commits and derive data.
         // .slacl files are added alongside user files so ACL manifest
@@ -991,14 +964,13 @@ impl RestrictedPathsTestData {
         let _ = (&scuba_logs, &self.expected_scuba_logs);
 
         println!(
-            "Scenario {scenario_idx} finished SUCCESSFULLY with expect_enforcement: {expect_enforcement}, conditional_enforcement_acls: {conditional_enforcement_acls:#?}, and enforcement_condition_sets: {enforcement_condition_sets:#?}"
+            "Scenario {scenario_idx} finished SUCCESSFULLY with expect_enforcement: {expect_enforcement} and enforcement_condition_sets: {enforcement_condition_sets:#?}"
         );
         Ok(RestrictedPathsScenarioResult { scuba_logs })
     }
 
     async fn setup_scenario_repo(
         &self,
-        conditional_enforcement_acls: &[MononokeIdentity],
         enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<RestrictedPathsScenario> {
         let log_file = tempfile::NamedTempFile::new()?;
@@ -1011,7 +983,6 @@ impl RestrictedPathsTestData {
             self.tooling_allowlist_group.clone(),
             acls,
             log_path.clone(),
-            conditional_enforcement_acls,
             enforcement_condition_sets,
         )
         .await?;
@@ -1183,7 +1154,6 @@ async fn setup_test_repo(
     tooling_allowlist_group: Option<String>,
     acls: Acls,
     log_file_path: std::path::PathBuf,
-    conditional_enforcement_acls: &[MononokeIdentity],
     enforcement_condition_sets: &[EnforcementConditionSet],
 ) -> Result<TestRepo> {
     let repo_id = RepositoryId::new(0);
@@ -1208,7 +1178,6 @@ async fn setup_test_repo(
         cache_update_interval_ms,
         tooling_allowlist_group,
         acl_manifest_mode,
-        conditional_enforcement_acls: conditional_enforcement_acls.to_vec(),
         enforcement_condition_sets: enforcement_condition_sets.to_vec(),
         enforcement_enabled: !enforcement_condition_sets.is_empty(),
         ..Default::default()

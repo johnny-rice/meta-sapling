@@ -1419,16 +1419,6 @@ impl Convert for RawRestrictedPathsConfig {
             .map(|raw| raw.convert())
             .collect::<Result<Vec<_>>>()?;
 
-        let conditional_enforcement_acls = self
-            .conditional_enforcement_acls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|id| {
-                MononokeIdentity::from_str(&id)
-                    .with_context(|| format!("Failed to parse identity: {}", id))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
         // tooling_allowlist_group is used directly as a group name for membership checking
         let tooling_allowlist_group = self.tooling_allowlist_acl;
 
@@ -1462,7 +1452,6 @@ impl Convert for RawRestrictedPathsConfig {
             use_manifest_id_cache,
             cache_update_interval_ms,
             soft_path_acls,
-            conditional_enforcement_acls,
             tooling_allowlist_group,
             rollout_allowlist_group,
             acl_file_name: self

@@ -20,6 +20,7 @@ use futures::TryStreamExt;
 use futures::future::BoxFuture;
 use futures::future::Shared;
 use futures::stream;
+use metaconfig_types::EnforcementConditionSet;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mononoke_types::NonRootMPath;
@@ -429,6 +430,21 @@ impl<T: SourceRestrictionCheck + Send + Sync + 'static> SharedFetchHandle<T> {
     }
 }
 
+/// Request-local result of evaluating enforcement condition sets before
+/// fetching restriction data.
+///
+/// Entry point and request-flag filters can be evaluated from `CoreContext`
+/// alone, so callers can skip restriction fetches when no set can match this
+/// request. `always_enabled` sets are definite matches. Remaining candidates
+/// still need fetched restriction ACLs before enforcement can decide whether
+/// the accessed restricted root is in scope.
+pub(crate) enum PreFilterResult<'a> {
+    NoMatch,
+    DefiniteMatch,
+    NeedsFetch {
+        candidates: Vec<&'a EnforcementConditionSet>,
+    },
+}
 /// Evaluate ACL and allowlist authorization for a restricted-path access.
 pub(crate) async fn check_authorization(
     ctx: &CoreContext,
@@ -555,6 +571,77 @@ pub(crate) async fn get_manifest_restriction_check(
         }
     };
     check_manifest_restriction_infos(ctx, restricted_paths, restriction_info).await
+}
+
+/// Apply the request-local portion of `enforcement_condition_sets`.
+///
+/// This is intentionally split from restriction ACL matching: request metadata
+/// is available before fetching restrictions, but `restriction_acls` can only
+/// be compared after the accessed restricted roots are known. Splitting the
+/// checks lets enforcement avoid unnecessary fetches for requests that cannot
+/// match any condition set while keeping restriction-scoped enforcement precise.
+pub(crate) fn pre_filter_condition_sets<'a>(
+    ctx: &CoreContext,
+    condition_sets: &'a [EnforcementConditionSet],
+) -> PreFilterResult<'a> {
+    let client_entry_point = ctx
+        .metadata()
+        .client_request_info()
+        .map(|cri| cri.entry_point.to_string());
+    let server_side_tenting = ctx.session().server_side_tenting();
+
+    let candidates = condition_sets
+        .iter()
+        .filter(|set| {
+            if !condition_set_has_active_filter(set) {
+                return false;
+            }
+
+            if set.always_enabled {
+                return true;
+            }
+
+            let entry_point_matches = set.entry_points.is_empty()
+                || client_entry_point.as_ref().is_some_and(|entry_point| {
+                    set.entry_points
+                        .iter()
+                        .any(|candidate| candidate == entry_point)
+                });
+            entry_point_matches && (!set.require_client_request_flag || server_side_tenting)
+        })
+        .collect::<Vec<_>>();
+
+    if candidates.is_empty() {
+        return PreFilterResult::NoMatch;
+    }
+
+    if candidates.iter().any(|set| set.always_enabled) {
+        PreFilterResult::DefiniteMatch
+    } else {
+        PreFilterResult::NeedsFetch { candidates }
+    }
+}
+
+fn condition_set_has_active_filter(set: &EnforcementConditionSet) -> bool {
+    set.always_enabled
+        || !set.entry_points.is_empty()
+        || set.require_client_request_flag
+        || !set.restriction_acls.is_empty()
+}
+
+pub(crate) fn condition_sets_match_restriction_acls(
+    condition_sets: &[&EnforcementConditionSet],
+    restriction_acls: &[MononokeIdentity],
+) -> bool {
+    condition_sets.iter().any(|set| {
+        condition_set_has_active_filter(set)
+            && (set.restriction_acls.is_empty()
+                || set.restriction_acls.iter().any(|condition_acl| {
+                    restriction_acls
+                        .iter()
+                        .any(|restriction_acl| restriction_acl == condition_acl)
+                }))
+    })
 }
 
 /// Check a path against one selected restriction source.

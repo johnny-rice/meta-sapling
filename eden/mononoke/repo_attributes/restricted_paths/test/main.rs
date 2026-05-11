@@ -167,11 +167,6 @@ async fn test_change_to_restricted_with_access_is_logged(fb: FacebookInit) -> Re
     RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths)
         .with_file_path_changes(vec![("user_project/foo/bar/a", None)])
-        .with_test_groups(vec![
-            // Group ACLs to conditionally enable enforcement of restricted paths
-            // i.e. throw AuthorizationError when trying to fetch unauthorized paths
-            ("enforcement_acl", vec!["USER:myusername0"]),
-        ])
         .expecting_manifest_id_store_entries(vec![
             RestrictedPathManifestIdEntry::new(
                 ManifestType::Hg,
@@ -291,15 +286,16 @@ async fn test_change_to_restricted_with_access_is_logged(fb: FacebookInit) -> Re
                 .with_acls(vec![project_acl.clone()])
                 .build()?,
         ])
-        .with_enforcement_scenarios(vec![
-            // Matching ACL = enforcement enabled.
-            (
-                vec![MononokeIdentity::new("GROUP", "enforcement_acl")],
-                // Enforcement is enabled, but user has access to the restricted
-                // path, so no AuthorizationError is thrown.
-                false,
-            ),
-        ])
+        .with_enforcement_scenarios(vec![(
+            vec![
+                EnforcementConditionSetBuilder::new()
+                    .with_restriction_acls([project_acl.clone()])
+                    .build(),
+            ],
+            // Enforcement is enabled, but user has access to the restricted
+            // path, so no AuthorizationError is thrown.
+            false,
+        )])
         .build(fb)
         .await?
         .run_restricted_paths_test()
@@ -335,11 +331,6 @@ async fn test_single_dir_single_restricted_change(fb: FacebookInit) -> Result<()
     RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths)
         .with_file_path_changes(vec![("restricted/dir/a", None)])
-        .with_test_groups(vec![
-            // Group ACLs to conditionally enable enforcement of restricted paths
-            // i.e. throw AuthorizationError when trying to fetch unauthorized paths
-            ("enforcement_acl", vec!["USER:myusername0"]),
-        ])
         .expecting_manifest_id_store_entries(vec![
             RestrictedPathManifestIdEntry::new(
                 ManifestType::Hg,
@@ -439,27 +430,43 @@ async fn test_single_dir_single_restricted_change(fb: FacebookInit) -> Result<()
                 .with_acls(vec![restricted_acl.clone()])
                 .build()?,
         ])
-        // The test user has identity USER:myusername0 and client_main_id "user:myusername0"
-        // Enforcement is based on ACL membership via conditional_enforcement_acls
         .with_enforcement_scenarios(vec![
-            // No ACLs = no enforcement (logging only)
+            // No condition sets = no enforcement (logging only)
             (vec![], false),
-            // Non-matching ACL = no enforcement (user not in this ACL)
-            (
-                vec![MononokeIdentity::new("REPO_REGION", "nonexistent_acl")],
-                false,
-            ),
-            // Matching ACL = enforcement triggered
-            // The test user is a member of the "enforcement_acl" repo region
-            (
-                vec![MononokeIdentity::new("GROUP", "enforcement_acl")],
-                true,
-            ),
-            // Multiple ACLs are OR'd together: if any ACL matches, enforcement is triggered
+            // Non-matching restriction ACL = no enforcement
             (
                 vec![
-                    MononokeIdentity::new("GROUP", "nonexistent_acl"),
-                    MononokeIdentity::new("GROUP", "enforcement_acl"),
+                    EnforcementConditionSetBuilder::new()
+                        .with_restriction_acls([MononokeIdentity::new(
+                            "REPO_REGION",
+                            "nonexistent_acl",
+                        )])
+                        .build(),
+                ],
+                false,
+            ),
+            // Matching restriction ACL = enforcement triggered
+            (
+                vec![
+                    EnforcementConditionSetBuilder::new()
+                        .with_restriction_acls([restricted_acl.clone()])
+                        .build(),
+                ],
+                true,
+            ),
+            // Multiple condition sets are OR'd together: if any set matches,
+            // enforcement is triggered.
+            (
+                vec![
+                    EnforcementConditionSetBuilder::new()
+                        .with_restriction_acls([MononokeIdentity::new(
+                            "REPO_REGION",
+                            "nonexistent_acl",
+                        )])
+                        .build(),
+                    EnforcementConditionSetBuilder::new()
+                        .with_restriction_acls([restricted_acl.clone()])
+                        .build(),
                 ],
                 true,
             ),
@@ -477,7 +484,7 @@ async fn test_single_dir_single_restricted_change(fb: FacebookInit) -> Result<()
 #[mononoke::fbinit_test]
 async fn test_enforcement_condition_set_matching_restriction_acl(fb: FacebookInit) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
-    let _was_denied = RestrictedPathsTestDataBuilder::new()
+    let was_denied = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(vec![(
             NonRootMPath::new("restricted/dir")?,
             restricted_acl.clone(),
@@ -492,7 +499,7 @@ async fn test_enforcement_condition_set_matching_restriction_acl(fb: FacebookIni
         )
         .await?;
 
-    // TODO(T248658346): assert that access was denied.
+    assert!(was_denied);
     Ok(())
 }
 
@@ -505,7 +512,7 @@ async fn test_enforcement_condition_set_non_matching_restriction_acl(
 ) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
     let unrelated_acl = MononokeIdentity::from_str("REPO_REGION:unrelated_acl")?;
-    let _was_denied = RestrictedPathsTestDataBuilder::new()
+    let was_denied = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
         .build(fb)
         .await?
@@ -517,7 +524,7 @@ async fn test_enforcement_condition_set_non_matching_restriction_acl(
         )
         .await?;
 
-    // TODO(T248658346): assert that access was not denied.
+    assert!(!was_denied);
     Ok(())
 }
 
@@ -526,7 +533,7 @@ async fn test_enforcement_condition_set_non_matching_restriction_acl(
 #[mononoke::fbinit_test]
 async fn test_enforcement_condition_set_default_does_not_enforce(fb: FacebookInit) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
-    let _was_denied = RestrictedPathsTestDataBuilder::new()
+    let was_denied = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
         .build(fb)
         .await?
@@ -536,7 +543,7 @@ async fn test_enforcement_condition_set_default_does_not_enforce(fb: FacebookIni
         )
         .await?;
 
-    // TODO(T248658346): assert that access was not denied.
+    assert!(!was_denied);
     Ok(())
 }
 
@@ -545,7 +552,7 @@ async fn test_enforcement_condition_set_default_does_not_enforce(fb: FacebookIni
 #[mononoke::fbinit_test]
 async fn test_enforcement_condition_set_always_enabled(fb: FacebookInit) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
-    let _was_denied = RestrictedPathsTestDataBuilder::new()
+    let was_denied = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
         .build(fb)
         .await?
@@ -557,7 +564,7 @@ async fn test_enforcement_condition_set_always_enabled(fb: FacebookInit) -> Resu
         )
         .await?;
 
-    // TODO(T248658346): assert that access was denied.
+    assert!(was_denied);
     Ok(())
 }
 
@@ -568,20 +575,20 @@ async fn test_enforcement_condition_set_always_enabled(fb: FacebookInit) -> Resu
 async fn test_enforcement_condition_set_request_local_filters(fb: FacebookInit) -> Result<()> {
     let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
     let restricted_paths = vec![(NonRootMPath::new("restricted/dir")?, restricted_acl.clone())];
-    let _was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
+    let was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths.clone())
         .build(fb)
         .await?
         .observe_path_enforcement(
             NonRootMPath::new("restricted/dir/file")?,
             &[EnforcementConditionSetBuilder::new()
-                .with_entry_points(["Tests"])
+                .with_entry_points(["tests"])
                 .with_require_client_request_flag(true)
                 .with_restriction_acls([restricted_acl.clone()])
                 .build()],
         )
         .await?;
-    let _was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
+    let was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths)
         .with_server_side_tenting(true)
         .build(fb)
@@ -589,15 +596,15 @@ async fn test_enforcement_condition_set_request_local_filters(fb: FacebookInit) 
         .observe_path_enforcement(
             NonRootMPath::new("restricted/dir/file")?,
             &[EnforcementConditionSetBuilder::new()
-                .with_entry_points(["Tests"])
+                .with_entry_points(["tests"])
                 .with_require_client_request_flag(true)
                 .with_restriction_acls([restricted_acl])
                 .build()],
         )
         .await?;
 
-    // TODO(T248658346): assert the missing request flag allows access and the
-    // matching request context denies unauthorized access.
+    assert!(!was_denied_without_flag);
+    assert!(was_denied_with_flag);
     Ok(())
 }
 
@@ -617,7 +624,7 @@ async fn test_enforcement_condition_set_request_flag_and_restriction_acl(
             .build()
     };
 
-    let _was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
+    let was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths.clone())
         .build(fb)
         .await?
@@ -626,7 +633,7 @@ async fn test_enforcement_condition_set_request_flag_and_restriction_acl(
             &[condition_set()],
         )
         .await?;
-    let _was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
+    let was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
         .with_restricted_paths(restricted_paths)
         .with_server_side_tenting(true)
         .build(fb)
@@ -637,8 +644,8 @@ async fn test_enforcement_condition_set_request_flag_and_restriction_acl(
         )
         .await?;
 
-    // TODO(T248658346): assert the missing request flag allows access and the
-    // matching request context denies unauthorized access.
+    assert!(!was_denied_without_flag);
+    assert!(was_denied_with_flag);
     Ok(())
 }
 

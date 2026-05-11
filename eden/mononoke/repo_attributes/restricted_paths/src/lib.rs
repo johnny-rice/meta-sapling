@@ -19,7 +19,6 @@ mod test_utils;
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use anyhow::Result;
 use context::CoreContext;
 use metaconfig_types::AclManifestMode;
@@ -37,10 +36,10 @@ use thiserror::Error;
 use tokio::task;
 
 pub use crate::access_log::ACCESS_LOG_SCUBA_TABLE;
-use crate::access_log::is_member_of_groups;
 use crate::access_log::log_access_to_restricted_path;
 pub use crate::restriction_check::ManifestRestrictionCheckResult;
 pub use crate::restriction_check::PathRestrictionCheckResult;
+use crate::restriction_check::PreFilterResult;
 pub use crate::restriction_check::RestrictionCheckResult;
 pub use crate::restriction_check::check_path_restriction_infos;
 pub use crate::restriction_info::ManifestRestrictionInfo;
@@ -368,16 +367,30 @@ impl RestrictedPaths {
         .await
     }
 
-    /// Check if any client identity matches the enforcement conditions config.
-    /// Returns true if enforcement should be applied.
-    async fn should_enforce_restriction(&self, ctx: &CoreContext) -> Result<bool> {
-        let enforcement_acls = self.config().conditional_enforcement_acls.clone();
-        if enforcement_acls.is_empty() {
-            return Ok(false);
-        }
+    fn restriction_acls_for_roots(
+        &self,
+        restriction_roots: &[NonRootMPath],
+    ) -> Vec<permission_checker::MononokeIdentity> {
+        restriction_roots
+            .iter()
+            .filter_map(|root| self.config().path_acls.get(root).cloned())
+            .collect()
+    }
+}
 
-        let acls: Vec<_> = enforcement_acls.iter().collect();
-        is_member_of_groups(ctx, &self.acl_provider, acls.as_slice()).await
+fn should_enforce_check_result(
+    restricted_paths: &RestrictedPaths,
+    check_result: &RestrictionCheckResult,
+    pre_filter_result: &PreFilterResult<'_>,
+) -> bool {
+    match pre_filter_result {
+        PreFilterResult::NoMatch => false,
+        PreFilterResult::DefiniteMatch => true,
+        PreFilterResult::NeedsFetch { candidates } => {
+            let restriction_acls =
+                restricted_paths.restriction_acls_for_roots(&check_result.restriction_roots);
+            restriction_check::condition_sets_match_restriction_acls(candidates, &restriction_acls)
+        }
     }
 }
 
@@ -442,9 +455,8 @@ pub fn spawn_log_restricted_path_access(
 ///
 /// This function:
 /// 1. Calls `spawn_log_restricted_path_access` for logging (fire-and-forget)
-/// 2. Checks if enforcement JK is enabled
-/// 3. Checks if any of the client identities match the condition enforcement ACLs
-/// 4. If match AND user lacks authorization, returns `RestrictedPathsError::AuthorizationError`
+/// 2. Checks whether enforcement is enabled for a matching condition set
+/// 3. If match AND user lacks authorization, returns `RestrictedPathsError::AuthorizationError`
 ///
 /// # Returns
 /// * `Ok(())` if access is allowed or enforcement is disabled
@@ -461,30 +473,14 @@ pub async fn spawn_enforce_restricted_path_access<'a, 'b>(
     let has_auth_task =
         spawn_log_restricted_path_access(ctx, restricted_paths.clone(), path, switch_value, cs_id)?;
 
-    // Check if enforcement JK is enabled
-    let enforcement_enabled = justknobs::eval(
-        "scm/mononoke:enable_server_side_path_acls",
-        None,
-        Some(switch_value),
-    )?;
-
-    // Early return if enforcement is disabled or there are no conditional
-    // enforcement ACLs configured
-    if !enforcement_enabled
-        || restricted_paths
-            .config()
-            .conditional_enforcement_acls
-            .is_empty()
-    {
+    let config = restricted_paths.config();
+    if !config.enforcement_enabled || config.enforcement_condition_sets.is_empty() {
         return Ok(());
     }
 
-    let should_enforce_restrictions = restricted_paths
-        .should_enforce_restriction(ctx)
-        .await
-        .context("Checking if conditional enforcement ACLs match")?;
-
-    if !should_enforce_restrictions {
+    let pre_filter_result =
+        restriction_check::pre_filter_condition_sets(ctx, &config.enforcement_condition_sets);
+    if matches!(pre_filter_result, PreFilterResult::NoMatch) {
         return Ok(());
     }
 
@@ -500,7 +496,9 @@ pub async fn spawn_enforce_restricted_path_access<'a, 'b>(
         }
     };
 
-    if !check_result.has_authorization {
+    if should_enforce_check_result(&restricted_paths, &check_result, &pre_filter_result)
+        && !check_result.has_authorization
+    {
         return Err(RestrictedPathsError::AuthorizationError(
             RestrictedPathAccessType::Path(path),
         ));
@@ -568,9 +566,8 @@ fn spawn_log_restricted_manifest_access(
 ///
 /// This function:
 /// 1. Calls `spawn_log_restricted_manifest_access` for logging (fire-and-forget)
-/// 2. Checks if enforcement JK is enabled
-/// 3. Checks if any of the client identities match the condition enforcement ACLs
-/// 4. If match AND user lacks authorization, returns `RestrictedPathsError::AuthorizationError`
+/// 2. Checks whether enforcement is enabled for a matching condition set
+/// 3. If match AND user lacks authorization, returns `RestrictedPathsError::AuthorizationError`
 ///
 /// # Returns
 /// * `Ok(())` if access is allowed or enforcement is disabled
@@ -594,30 +591,14 @@ pub async fn spawn_enforce_restricted_manifest_access<'a>(
         cs_id,
     )?;
 
-    // Check if enforcement JK is enabled
-    let enforcement_enabled = justknobs::eval(
-        "scm/mononoke:enable_server_side_path_acls",
-        None,
-        Some(switch_value),
-    )?;
-
-    // Early return if enforcement is disabled or there are no conditional
-    // enforcement ACLs configured
-    if !enforcement_enabled
-        || restricted_paths
-            .config()
-            .conditional_enforcement_acls
-            .is_empty()
-    {
+    let config = restricted_paths.config();
+    if !config.enforcement_enabled || config.enforcement_condition_sets.is_empty() {
         return Ok(());
     }
 
-    let should_enforce_restrictions = restricted_paths
-        .should_enforce_restriction(ctx)
-        .await
-        .context("Checking if conditional enforcement ACLs match")?;
-
-    if !should_enforce_restrictions {
+    let pre_filter_result =
+        restriction_check::pre_filter_condition_sets(ctx, &config.enforcement_condition_sets);
+    if matches!(pre_filter_result, PreFilterResult::NoMatch) {
         return Ok(());
     }
 
@@ -631,7 +612,9 @@ pub async fn spawn_enforce_restricted_manifest_access<'a>(
         }
     };
 
-    if !check_result.has_authorization {
+    if should_enforce_check_result(&restricted_paths, &check_result, &pre_filter_result)
+        && !check_result.has_authorization
+    {
         return Err(RestrictedPathsError::AuthorizationError(
             RestrictedPathAccessType::Manifest(manifest_id),
         ));
@@ -695,7 +678,6 @@ mod tests {
             use_manifest_id_cache: true,
             cache_update_interval_ms: 100,
             soft_path_acls: Vec::new(),
-            conditional_enforcement_acls: Vec::new(),
             enforcement_condition_sets: Vec::new(),
             enforcement_enabled: RestrictedPathsConfig::default().enforcement_enabled,
             tooling_allowlist_group: None,
@@ -721,7 +703,6 @@ mod tests {
             use_manifest_id_cache: true,
             cache_update_interval_ms: 100,
             soft_path_acls: Vec::new(),
-            conditional_enforcement_acls: Vec::new(),
             enforcement_condition_sets: Vec::new(),
             enforcement_enabled: RestrictedPathsConfig::default().enforcement_enabled,
             tooling_allowlist_group: None,
