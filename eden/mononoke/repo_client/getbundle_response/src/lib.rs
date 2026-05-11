@@ -392,7 +392,7 @@ async fn create_hg_changeset_part(
         CgVersion::Cg2Version
     };
 
-    parts::changegroup_part(changelogentries, None, cg_version)
+    parts::changegroup_part(changelogentries, cg_version)
 }
 
 async fn hg_to_bonsai_stream(

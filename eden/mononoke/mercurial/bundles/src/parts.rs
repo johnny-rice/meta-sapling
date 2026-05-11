@@ -24,16 +24,13 @@ use futures::TryStreamExt;
 use futures::future;
 use futures::future::BoxFuture;
 use futures::stream;
-use futures::stream::BoxStream;
 use futures_stats::TimedFutureExt;
 use mercurial_mutation::HgMutationEntry;
 use mercurial_types::Delta;
 use mercurial_types::HgBlobNode;
 use mercurial_types::HgChangesetId;
-use mercurial_types::HgFileNodeId;
 use mercurial_types::HgNodeHash;
 use mercurial_types::NULL_HASH;
-use mercurial_types::NonRootMPath;
 use mercurial_types::RepoPath;
 use mercurial_types::RevFlags;
 use mononoke_types::DateTime;
@@ -55,8 +52,6 @@ use crate::errors::ErrorKind;
 use crate::part_encode::PartEncodeBuilder;
 use crate::part_header::PartHeaderType;
 use crate::part_header::PartId;
-
-pub type FilenodeEntry = (HgFileNodeId, HgChangesetId, HgBlobNode, Option<RevFlags>);
 
 pub fn listkey_part<N, S, K, V>(namespace: N, items: S) -> Result<PartEncodeBuilder>
 where
@@ -111,11 +106,7 @@ where
     Ok(builder)
 }
 
-pub fn changegroup_part<CS>(
-    changelogentries: CS,
-    filenodeentries: Option<BoxStream<'static, Result<(NonRootMPath, Vec<FilenodeEntry>), Error>>>,
-    version: CgVersion,
-) -> Result<PartEncodeBuilder>
+pub fn changegroup_part<CS>(changelogentries: CS, version: CgVersion) -> Result<PartEncodeBuilder>
 where
     CS: Stream<Item = Result<(HgNodeHash, HgBlobNode), Error>> + Send + 'static,
 {
@@ -129,28 +120,20 @@ where
         .chain(stream::once(future::ok(Part::SectionEnd(
             Section::Changeset,
         ))))
-        // One more SectionEnd entry is necessary because hg client excepts filelog section
+        // One more SectionEnd entry is necessary because hg client expects filelog section
         // even if it's empty. Add a fake SectionEnd part (the choice of
         // Manifest is just for convenience).
         .chain(stream::once(future::ok(Part::SectionEnd(
             Section::Manifest,
         ))));
 
-    let changelogentries = if version == CgVersion::Cg3Version {
+    let changegroup = if version == CgVersion::Cg3Version {
         // Changegroup V3 requires one empty chunk after manifest section
         // hence adding Part::SectionEnd below
         changelogentries
             .chain(stream::once(future::ok(Part::SectionEnd(
                 Section::Manifest,
             ))))
-            .left_stream()
-    } else {
-        changelogentries.right_stream()
-    };
-
-    let changegroup = if let Some(filenodeentries) = filenodeentries {
-        changelogentries
-            .chain(convert_file_stream(filenodeentries, version))
             .left_stream()
     } else {
         changelogentries.right_stream()
@@ -197,50 +180,6 @@ where
         };
         Part::CgChunk(Section::Changeset, deltachunk)
     })
-}
-
-fn convert_file_stream<FS>(
-    filenodeentries: FS,
-    cg_version: CgVersion,
-) -> impl Stream<Item = Result<Part, Error>>
-where
-    FS: Stream<Item = Result<(NonRootMPath, Vec<FilenodeEntry>), Error>> + Send + 'static,
-{
-    filenodeentries
-        .map_ok(move |(path, nodes)| {
-            let mut items = vec![];
-            for (node, hg_cs_id, blobnode, flags) in nodes {
-                let parents = blobnode.parents().get_nodes();
-                let p1 = parents.0.unwrap_or(NULL_HASH);
-                let p2 = parents.1.unwrap_or(NULL_HASH);
-                let base = NULL_HASH;
-                // Linknode is the same as node
-                let linknode = hg_cs_id.into_nodehash();
-                let text = blobnode.as_blob().as_inner().clone();
-                let delta = Delta::new_fulltext(text.to_vec());
-
-                let deltachunk = CgDeltaChunk {
-                    node: node.into_nodehash(),
-                    p1,
-                    p2,
-                    base,
-                    linknode,
-                    delta,
-                    flags,
-                };
-                if flags.is_some() && cg_version == CgVersion::Cg2Version {
-                    return stream::once(future::err(Error::msg(
-                        "internal error: unexpected flags in cg2 generation",
-                    )))
-                    .left_stream();
-                }
-                items.push(Part::CgChunk(Section::Filelog(path.clone()), deltachunk));
-            }
-
-            items.push(Part::SectionEnd(Section::Filelog(path)));
-            stream::iter(items).map(anyhow::Ok).right_stream()
-        })
-        .try_flatten()
 }
 
 pub fn replycaps_part(caps: Bytes) -> Result<PartEncodeBuilder> {

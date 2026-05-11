@@ -1521,7 +1521,6 @@ mod test {
                     namespace: Some(InfinitepushNamespace::new(
                         ComparableRegex::new("foobar/.+").unwrap(),
                     )),
-                    hydrate_getbundle_response: false,
                 },
                 list_keys_patterns_max: 123,
                 hook_max_file_size: 456,

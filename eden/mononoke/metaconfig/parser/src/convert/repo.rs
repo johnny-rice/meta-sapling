@@ -452,7 +452,6 @@ impl Convert for RawInfinitepushParams {
                     .ok()
                     .map(InfinitepushNamespace::new)
             }),
-            hydrate_getbundle_response: self.hydrate_getbundle_response.unwrap_or(false),
         })
     }
 }
