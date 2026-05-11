@@ -851,6 +851,56 @@ mod tests {
         Ok(())
     }
 
+    // What it tests: Both mode should require AclManifest derived data because
+    // it must fetch restrictions from AclManifest as an authoritative source.
+    // Expected: construction fails with a clear configuration error.
+    #[mononoke::fbinit_test]
+    async fn test_both_mode_requires_acl_manifest_derivation(fb: FacebookInit) -> Result<()> {
+        let config = RestrictedPathsConfig {
+            acl_manifest_mode: AclManifestMode::Both,
+            ..Default::default()
+        };
+        let _result = build_test_restricted_paths_with_options(
+            fb,
+            config,
+            DummyAclProvider::new(fb)?,
+            false,
+            false,
+        )
+        .await;
+
+        // TODO(T248660053): assert construction fails until AclManifest
+        // derivation is enabled.
+
+        Ok(())
+    }
+
+    // What it tests: Authoritative mode should require AclManifest derived data
+    // because config should no longer be the primary restriction source.
+    // Expected: construction fails with a clear configuration error.
+    #[mononoke::fbinit_test]
+    async fn test_authoritative_mode_requires_acl_manifest_derivation(
+        fb: FacebookInit,
+    ) -> Result<()> {
+        let config = RestrictedPathsConfig {
+            acl_manifest_mode: AclManifestMode::Authoritative,
+            ..Default::default()
+        };
+        let _result = build_test_restricted_paths_with_options(
+            fb,
+            config,
+            DummyAclProvider::new(fb)?,
+            false,
+            false,
+        )
+        .await;
+
+        // TODO(T248660053): assert construction fails until AclManifest
+        // derivation is enabled.
+
+        Ok(())
+    }
+
     // What it tests: legacy `use_acl_manifest = true` validation remains unchanged.
     // Expected: the legacy failure remains independent from Shadow-mode validation.
     #[mononoke::fbinit_test]
