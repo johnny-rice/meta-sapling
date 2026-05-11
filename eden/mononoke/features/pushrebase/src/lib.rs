@@ -866,11 +866,15 @@ async fn check_pushrebase_conflicts(
             STATS::conflict_rejections.add_value(1, (reponame.to_string(),));
             STATS::conflict_files_count.add_value(conflicts.len() as i64, (reponame.to_string(),));
 
-            let merge_enabled = justknobs::eval(
-                "scm/mononoke:pushrebase_enable_merge_resolution",
-                None,
-                Some(reponame),
-            )?;
+            // Per-request override wins; absence defers to the JK.
+            let merge_enabled = match config.merge_resolution_override {
+                Some(enabled) => enabled,
+                None => justknobs::eval(
+                    "scm/mononoke:pushrebase_enable_merge_resolution",
+                    None,
+                    Some(reponame),
+                )?,
+            };
             let max_merge_conflicts: usize = justknobs::get_as::<usize>(
                 "scm/mononoke:pushrebase_max_merge_conflicts",
                 Some(reponame),
