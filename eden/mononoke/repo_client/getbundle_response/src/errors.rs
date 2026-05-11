@@ -5,7 +5,6 @@
  * GNU General Public License version 2.
  */
 
-use filestore::FetchKey;
 use mercurial_types::HgChangesetId;
 use thiserror::Error;
 
@@ -13,6 +12,4 @@ use thiserror::Error;
 pub enum ErrorKind {
     #[error("Bonsai not found for hg changeset: {0:?}")]
     BonsaiNotFoundForHgChangeset(HgChangesetId),
-    #[error("missing content {0:?}")]
-    MissingContent(FetchKey),
 }
