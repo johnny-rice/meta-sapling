@@ -144,7 +144,7 @@ impl AffectedChangesets {
             })
             .await?
             .into_iter()
-            .chain(base.into_iter())
+            .chain(base)
             .collect();
         Ok(repo
             .commit_graph()
