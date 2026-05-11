@@ -78,8 +78,8 @@ impl ChangesetFrontier {
 
     /// Returns a vec of all changesets in the frontier.
     pub fn changesets(&self) -> Vec<ChangesetId> {
-        self.iter()
-            .flat_map(|(_, cs_ids)| cs_ids.iter())
+        self.values()
+            .flat_map(|cs_ids| cs_ids.iter())
             .copied()
             .collect()
     }
