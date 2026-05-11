@@ -33,6 +33,7 @@ use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_derivation::derive_hg_changeset::DeriveHgChangeset;
 use mercurial_types::HgAugmentedManifestId;
 use metaconfig_types::AclManifestMode;
+use metaconfig_types::EnforcementConditionSet;
 use metaconfig_types::RestrictedPathsConfig;
 use metadata::Metadata;
 use mononoke_api::MononokeError;
@@ -107,6 +108,7 @@ pub struct RestrictedPathsTestDataBuilder {
     /// Store the repo regions config for recreating ACLs in enforcement scenarios
     repo_regions_config: Vec<(String, Vec<String>)>,
     groups_config: Vec<(String, Vec<String>)>,
+    server_side_tenting: bool,
     client_identity: Option<MononokeIdentity>,
     file_path_changes: Vec<(String, Option<String>)>,
     expected_manifest_entries: Option<Vec<RestrictedPathManifestIdEntry>>,
@@ -327,6 +329,7 @@ impl RestrictedPathsTestDataBuilder {
             tooling_allowlist_group: None,
             groups_config: vec![],
             repo_regions_config: vec![],
+            server_side_tenting: false,
             client_identity: None,
             file_path_changes: vec![],
             expected_manifest_entries: None,
@@ -411,6 +414,11 @@ impl RestrictedPathsTestDataBuilder {
         self
     }
 
+    pub fn with_server_side_tenting(mut self, server_side_tenting: bool) -> Self {
+        self.server_side_tenting = server_side_tenting;
+        self
+    }
+
     pub fn with_file_path_changes(mut self, file_path_changes: Vec<(&str, Option<&str>)>) -> Self {
         self.file_path_changes = file_path_changes
             .into_iter()
@@ -486,7 +494,10 @@ impl RestrictedPathsTestDataBuilder {
             md.add_client_info(client_info);
             Arc::new(md)
         };
-        let session_container = SessionContainer::builder(fb).metadata(metadata).build();
+        let session_container = SessionContainer::builder(fb)
+            .metadata(metadata)
+            .server_side_tenting(self.server_side_tenting)
+            .build();
         let ctx = CoreContext::test_mock_session(session_container);
 
         Ok(RestrictedPathsTestData {
@@ -523,14 +534,20 @@ impl RestrictedPathsTestData {
         // only applies to the current thread.
 
         // Run without enforcement scenarios
-        self.run_restricted_paths_test_inner(0, &[], false).await?;
+        self.run_restricted_paths_test_inner(0, &[], &[], false)
+            .await?;
 
         // Run enforcement testing for each scenario
         for (scenario_idx, (conditions, expect_enforcement)) in
             self.enforcement_scenarios.iter().enumerate()
         {
-            self.run_restricted_paths_test_inner(scenario_idx + 1, conditions, *expect_enforcement)
-                .await?;
+            self.run_restricted_paths_test_inner(
+                scenario_idx + 1,
+                conditions,
+                &[],
+                *expect_enforcement,
+            )
+            .await?;
         }
 
         Ok(())
@@ -541,7 +558,7 @@ impl RestrictedPathsTestData {
         &self,
         conditional_enforcement_acls: &[MononokeIdentity],
     ) -> Result<RestrictedPathsScenarioResult> {
-        self.run_restricted_paths_test_inner(0, conditional_enforcement_acls, false)
+        self.run_restricted_paths_test_inner(0, conditional_enforcement_acls, &[], false)
             .await
     }
 
@@ -553,7 +570,7 @@ impl RestrictedPathsTestData {
         conditional_enforcement_acls: &[MononokeIdentity],
     ) -> Result<RestrictedPathsScenarioResult> {
         let scenario = self
-            .setup_scenario_repo(conditional_enforcement_acls)
+            .setup_scenario_repo(conditional_enforcement_acls, &[])
             .await?;
 
         scenario
@@ -577,7 +594,7 @@ impl RestrictedPathsTestData {
         conditional_enforcement_acls: &[MononokeIdentity],
     ) -> Result<RestrictedPathsScenarioResult> {
         let scenario = self
-            .setup_scenario_repo(conditional_enforcement_acls)
+            .setup_scenario_repo(conditional_enforcement_acls, &[])
             .await?;
 
         let mut commit_ctx = CreateCommitContext::new_root(&self.ctx, &scenario.repo);
@@ -611,6 +628,35 @@ impl RestrictedPathsTestData {
         })
     }
 
+    /// Calls path-based restricted paths enforcement directly and returns true
+    /// when access was denied.
+    pub async fn observe_path_enforcement(
+        &self,
+        path: NonRootMPath,
+        enforcement_condition_sets: &[EnforcementConditionSet],
+    ) -> Result<bool> {
+        let scenario = self
+            .setup_scenario_repo(&[], enforcement_condition_sets)
+            .await?;
+
+        let mpath = MPath::from(path);
+        let result = spawn_enforce_restricted_path_access(
+            &self.ctx,
+            scenario.repo.restricted_paths_arc().clone(),
+            &mpath,
+            "restricted_paths_test",
+            None,
+        )
+        .await;
+        let was_denied = match result {
+            Ok(()) => false,
+            Err(RestrictedPathsError::AuthorizationError(_)) => true,
+            Err(RestrictedPathsError::InternalError(err)) => return Err(err),
+        };
+
+        Ok(was_denied)
+    }
+
     /// Run restricted paths testing for a single scenario.
     /// Creates a repo with the given conditional enforcement ACLs and runs all access operations.
     /// If expect_enforcement is true, expects an AuthorizationError from the access operations.
@@ -618,16 +664,18 @@ impl RestrictedPathsTestData {
         &self,
         scenario_idx: usize,
         conditional_enforcement_acls: &[MononokeIdentity],
+        enforcement_condition_sets: &[EnforcementConditionSet],
         expect_enforcement: bool,
     ) -> Result<RestrictedPathsScenarioResult> {
         println!(
-            "Running scenario {scenario_idx} with expect_enforcement: {expect_enforcement} and conditional_enforcement_acls: {conditional_enforcement_acls:#?}"
+            "Running scenario {scenario_idx} with expect_enforcement: {expect_enforcement}, conditional_enforcement_acls: {conditional_enforcement_acls:#?}, and enforcement_condition_sets: {enforcement_condition_sets:#?}"
         );
+        // Set up a fresh repo and log file for this scenario.
         let RestrictedPathsScenario {
             repo: scenario_repo,
             log_path,
         } = self
-            .setup_scenario_repo(conditional_enforcement_acls)
+            .setup_scenario_repo(conditional_enforcement_acls, enforcement_condition_sets)
             .await?;
 
         // Create commits and derive data.
@@ -943,7 +991,7 @@ impl RestrictedPathsTestData {
         let _ = (&scuba_logs, &self.expected_scuba_logs);
 
         println!(
-            "Scenario {scenario_idx} finished SUCCESSFULLY with expect_enforcement: {expect_enforcement} and conditional_enforcement_acls: {conditional_enforcement_acls:#?}"
+            "Scenario {scenario_idx} finished SUCCESSFULLY with expect_enforcement: {expect_enforcement}, conditional_enforcement_acls: {conditional_enforcement_acls:#?}, and enforcement_condition_sets: {enforcement_condition_sets:#?}"
         );
         Ok(RestrictedPathsScenarioResult { scuba_logs })
     }
@@ -951,6 +999,7 @@ impl RestrictedPathsTestData {
     async fn setup_scenario_repo(
         &self,
         conditional_enforcement_acls: &[MononokeIdentity],
+        enforcement_condition_sets: &[EnforcementConditionSet],
     ) -> Result<RestrictedPathsScenario> {
         let log_file = tempfile::NamedTempFile::new()?;
         let log_path = log_file.into_temp_path().keep()?;
@@ -963,6 +1012,7 @@ impl RestrictedPathsTestData {
             acls,
             log_path.clone(),
             conditional_enforcement_acls,
+            enforcement_condition_sets,
         )
         .await?;
 
@@ -986,6 +1036,59 @@ impl RestrictedPathsTestData {
             .map(|(region, users)| (region.as_str(), users.iter().map(|u| u.as_str()).collect()))
             .collect();
         setup_test_acls_with_groups(repo_regions_config, groups_config)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct EnforcementConditionSetBuilder {
+    always_enabled: bool,
+    entry_points: Vec<String>,
+    require_client_request_flag: bool,
+    restriction_acls: Vec<MononokeIdentity>,
+}
+
+impl EnforcementConditionSetBuilder {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn with_always_enabled(mut self, always_enabled: bool) -> Self {
+        self.always_enabled = always_enabled;
+        self
+    }
+
+    pub(crate) fn with_entry_points<I, S>(mut self, entry_points: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.entry_points = entry_points.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(crate) fn with_require_client_request_flag(
+        mut self,
+        require_client_request_flag: bool,
+    ) -> Self {
+        self.require_client_request_flag = require_client_request_flag;
+        self
+    }
+
+    pub(crate) fn with_restriction_acls<I>(mut self, restriction_acls: I) -> Self
+    where
+        I: IntoIterator<Item = MononokeIdentity>,
+    {
+        self.restriction_acls = restriction_acls.into_iter().collect();
+        self
+    }
+
+    pub(crate) fn build(self) -> EnforcementConditionSet {
+        EnforcementConditionSet {
+            always_enabled: self.always_enabled,
+            entry_points: self.entry_points,
+            require_client_request_flag: self.require_client_request_flag,
+            restriction_acls: self.restriction_acls,
+        }
     }
 }
 
@@ -1081,6 +1184,7 @@ async fn setup_test_repo(
     acls: Acls,
     log_file_path: std::path::PathBuf,
     conditional_enforcement_acls: &[MononokeIdentity],
+    enforcement_condition_sets: &[EnforcementConditionSet],
 ) -> Result<TestRepo> {
     let repo_id = RepositoryId::new(0);
     let use_manifest_id_cache = true;
@@ -1105,6 +1209,8 @@ async fn setup_test_repo(
         tooling_allowlist_group,
         acl_manifest_mode,
         conditional_enforcement_acls: conditional_enforcement_acls.to_vec(),
+        enforcement_condition_sets: enforcement_condition_sets.to_vec(),
+        enforcement_enabled: !enforcement_condition_sets.is_empty(),
         ..Default::default()
     };
 

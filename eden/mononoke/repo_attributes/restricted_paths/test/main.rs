@@ -472,6 +472,176 @@ async fn test_single_dir_single_restricted_change(fb: FacebookInit) -> Result<()
     Ok(())
 }
 
+// What it tests: a condition set scoped to the matching restricted path ACL.
+// Expected: unauthorized access to a path with that restriction ACL is denied.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_matching_restriction_acl(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let _was_denied = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(vec![(
+            NonRootMPath::new("restricted/dir")?,
+            restricted_acl.clone(),
+        )])
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_restriction_acls([restricted_acl])
+                .build()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert that access was denied.
+    Ok(())
+}
+
+// What it tests: a condition set scoped to an unrelated restricted path ACL should
+// not deny access to this restricted path.
+// Expected: unauthorized access is allowed because the condition set does not match.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_non_matching_restriction_acl(
+    fb: FacebookInit,
+) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let unrelated_acl = MononokeIdentity::from_str("REPO_REGION:unrelated_acl")?;
+    let _was_denied = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_restriction_acls([unrelated_acl])
+                .build()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert that access was not denied.
+    Ok(())
+}
+
+// What it tests: the all-default condition set.
+// Expected: unauthorized access is allowed because default sets do not enforce.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_default_does_not_enforce(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let _was_denied = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new().build()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert that access was not denied.
+    Ok(())
+}
+
+// What it tests: an explicit always-enabled condition set.
+// Expected: unauthorized access is denied for every restricted path.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_always_enabled(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let _was_denied = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(vec![(NonRootMPath::new("restricted/dir")?, restricted_acl)])
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_always_enabled(true)
+                .build()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert that access was denied.
+    Ok(())
+}
+
+// What it tests: request-local condition-set filters.
+// Expected: unauthorized access is allowed without the required request flag and
+// denied when the request flag is present.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_request_local_filters(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let restricted_paths = vec![(NonRootMPath::new("restricted/dir")?, restricted_acl.clone())];
+    let _was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(restricted_paths.clone())
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_entry_points(["Tests"])
+                .with_require_client_request_flag(true)
+                .with_restriction_acls([restricted_acl.clone()])
+                .build()],
+        )
+        .await?;
+    let _was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(restricted_paths)
+        .with_server_side_tenting(true)
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_entry_points(["Tests"])
+                .with_require_client_request_flag(true)
+                .with_restriction_acls([restricted_acl])
+                .build()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert the missing request flag allows access and the
+    // matching request context denies unauthorized access.
+    Ok(())
+}
+
+// What it tests: a condition set with both the request flag and restriction ACL filters.
+// Expected: both filters must match, so unauthorized access is allowed without
+// the request flag and denied when the request flag is present.
+#[mononoke::fbinit_test]
+async fn test_enforcement_condition_set_request_flag_and_restriction_acl(
+    fb: FacebookInit,
+) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let restricted_paths = vec![(NonRootMPath::new("restricted/dir")?, restricted_acl.clone())];
+    let condition_set = || {
+        EnforcementConditionSetBuilder::new()
+            .with_require_client_request_flag(true)
+            .with_restriction_acls([restricted_acl.clone()])
+            .build()
+    };
+
+    let _was_denied_without_flag = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(restricted_paths.clone())
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[condition_set()],
+        )
+        .await?;
+    let _was_denied_with_flag = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(restricted_paths)
+        .with_server_side_tenting(true)
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[condition_set()],
+        )
+        .await?;
+
+    // TODO(T248658346): assert the missing request flag allows access and the
+    // matching request context denies unauthorized access.
+    Ok(())
+}
+
 // Multiple files in a single restricted directory generate a single entry in
 // the manifest id store.
 #[mononoke::fbinit_test]
