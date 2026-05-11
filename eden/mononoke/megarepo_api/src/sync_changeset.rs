@@ -503,7 +503,7 @@ async fn sync_changeset_to_target<R: MononokeRepo>(
             })
         }
         MergeMode::Squashed { side_commits } => {
-            let side_commits_info = stream::iter(side_commits.into_iter())
+            let side_commits_info = stream::iter(side_commits)
                 .map(|cs_ctx| async move {
                     let hash = match cs_ctx.git_sha1().await? {
                         None => format!("HG hash: {}", cs_ctx.id()),

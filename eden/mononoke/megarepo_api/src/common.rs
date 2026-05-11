@@ -749,7 +749,7 @@ pub trait MegarepoOp<R> {
     where
         R: Repo,
     {
-        let linkfiles = stream::iter(links.into_iter())
+        let linkfiles = stream::iter(links)
             .map(Ok)
             .map_ok(|(path, content)| async {
                 let ((content_id, size), fut) = filestore::store_bytes(
