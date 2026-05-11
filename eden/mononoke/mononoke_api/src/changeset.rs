@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
 use std::future::Future;
+use std::ops::Bound;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -1196,6 +1197,146 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         )
         .watched()
         .await
+    }
+
+    /// Find paths whose only effective change between `self` and `other` is a
+    /// Git-LFS discriminator flip (raw blob ↔ canonical pointer with the
+    /// same resolved content). The manifest walk in `diff()` misses these
+    /// because `FsnodeFile` / `ContentManifestFile` carry no `git_lfs`
+    /// field.
+    ///
+    /// `excluded_paths` should be the set of paths the manifest walk already
+    /// emitted: any path in there is by definition NOT an LFS-only flip
+    /// (the manifests differed on `content_id` or `file_type`), so the
+    /// supplement skips it. This is what guarantees the returned set is
+    /// disjoint from the manifest walk's output without re-deriving the
+    /// content manifests here.
+    ///
+    /// Caller invariants (not enforced here):
+    /// - `other` should be `self`'s first parent. Comparisons against a
+    ///   non-leftmost merge parent or a non-parent skip the supplement.
+    /// - The repo must have `git_lfs_interpret_pointers` set; this method
+    ///   short-circuits to an empty result when it doesn't.
+    ///
+    /// Returns entries materialized into `ChangesetPathDiffContext`, sorted
+    /// ascending by path. The contained `ChangesetPathContentContext`
+    /// instances lazy-load their manifest entries on first access, so
+    /// consumers that only read paths pay no blobstore cost beyond the
+    /// per-path ACL checks.
+    pub(crate) async fn get_potential_lfs_changes(
+        &self,
+        other: &ChangesetContext<R>,
+        path_restrictions: &Option<Vec<MPath>>,
+        subtree_copy_sources: &manifest::PathTree<Option<(ChangesetContext<R>, MPath)>>,
+        excluded_paths: &HashSet<MPath>,
+        after: Option<&MPath>,
+        before_or_at: Option<&MPath>,
+        max_entries: usize,
+    ) -> Result<Vec<ChangesetPathDiffContext<R>>, MononokeError> {
+        // Per-path `ChangesetPathContentContext::new` calls do an ACL check
+        // and a restricted-paths check. Bound the parallel fan-out per the
+        // project guidance for path-context construction.
+        const LFS_PATH_CONTEXT_CONCURRENCY: usize = 50;
+
+        if max_entries == 0
+            || !self
+                .repo_ctx()
+                .repo()
+                .repo_config()
+                .git_configs
+                .git_lfs_interpret_pointers
+        {
+            return Ok(Vec::new());
+        }
+
+        if before_or_at.is_some_and(|b| b.is_root() || after.is_some_and(|a| b <= a)) {
+            return Ok(Vec::new());
+        }
+
+        fn within_restrictions(path: &MPath, path_restrictions: &Option<Vec<MPath>>) -> bool {
+            path_restrictions.as_ref().is_none_or(|i| {
+                i.iter()
+                    .any(|path_restriction| path.is_related_to(path_restriction))
+            })
+        }
+        fn is_lfs_pointer(file_change: &FileChange) -> bool {
+            file_change
+                .simplify()
+                .is_some_and(|bfc| bfc.git_lfs().is_lfs_pointer())
+        }
+
+        let (self_changes, other_changes) =
+            try_join(self.file_changes(), other.file_changes()).await?;
+
+        let start_bound = after
+            .cloned()
+            .and_then(MPath::into_optional_non_root_path)
+            .map_or(Bound::Unbounded, Bound::Excluded);
+        let end_bound = before_or_at
+            .cloned()
+            .and_then(MPath::into_optional_non_root_path)
+            .map_or(Bound::Unbounded, Bound::Included);
+
+        let candidates: Vec<MPath> = self_changes
+            .range::<NonRootMPath, _>((start_bound, end_bound))
+            .filter_map(|(non_root_path, file_change)| {
+                let FileChange::Change(_) = file_change else {
+                    return None;
+                };
+
+                if !is_lfs_pointer(file_change)
+                    && !other_changes.get(non_root_path).is_some_and(is_lfs_pointer)
+                {
+                    return None;
+                }
+
+                let path: MPath = non_root_path.clone().into();
+                if !within_restrictions(&path, path_restrictions) {
+                    return None;
+                }
+
+                // Skip paths inside a subtree-copy region: for those, the
+                // correct comparison side is the copy source, not `other`,
+                // and the main manifest walk handles them via its own
+                // subtree-copy logic.
+                if subtree_copy_sources
+                    .get_nearest_parent(&path, Option::is_some)
+                    .is_some()
+                {
+                    return None;
+                }
+
+                // Already emitted by the manifest walk -- the manifests
+                // differed on content_id or file_type, so it isn't an
+                // LFS-only flip.
+                if excluded_paths.contains(&path) {
+                    return None;
+                }
+
+                Some(path)
+            })
+            .collect();
+
+        stream::iter(candidates)
+            .map(|path| async move {
+                let (new_content, old_content) = try_join(
+                    ChangesetPathContentContext::new(self.clone(), path.clone()),
+                    ChangesetPathContentContext::new(other.clone(), path.clone()),
+                )
+                .await?;
+                ChangesetPathDiffContext::new_file(
+                    self.clone(),
+                    path,
+                    Some(new_content),
+                    Some(old_content),
+                    CopyInfo::None,
+                    None,
+                )
+            })
+            .buffered(LFS_PATH_CONTEXT_CONCURRENCY)
+            .take(max_entries)
+            .try_collect()
+            .await
     }
 
     /// If the given path is part of a subtree copy, get the subtree copy source, as well as the replacement path

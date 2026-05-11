@@ -7,6 +7,7 @@
 
 use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Error;
@@ -16,17 +17,22 @@ use fixtures::ManyFilesDirs;
 use fixtures::TestRepoFixture;
 use maplit::btreeset;
 use mononoke_macros::mononoke;
+use mononoke_types::ChangesetId;
+use mononoke_types::FileType;
+use mononoke_types::GitLfs;
 use mononoke_types::path::MPath;
 use pretty_assertions::assert_eq;
 use tests_utils::CreateCommitContext;
 use xdiff::CopyInfo;
 
+use crate::ChangesetContext;
 use crate::ChangesetDiffItem;
 use crate::ChangesetFileOrdering;
 use crate::ChangesetPathDiffContext;
 use crate::CoreContext;
 use crate::HgChangesetId;
 use crate::Mononoke;
+use crate::RepoContext;
 use crate::repo::MononokeRepo;
 use crate::repo::Repo;
 
@@ -785,6 +791,430 @@ async fn test_ordered_root_diff(fb: FacebookInit) -> Result<(), Error> {
         "é",
     ];
     check_diff_paths(&diff, &second_commit_files_list);
+
+    Ok(())
+}
+
+async fn build_lfs_enabled_repo(fb: FacebookInit) -> Result<Repo, Error> {
+    Ok(test_repo_factory::TestRepoFactory::new(fb)?
+        .with_config_override(|cfg| {
+            cfg.git_configs.git_lfs_interpret_pointers = true;
+        })
+        .build()
+        .await?)
+}
+
+async fn repo_ctx_for_test(ctx: &CoreContext, repo: Repo) -> Result<RepoContext<Repo>, Error> {
+    Ok(RepoContext::new_test(ctx.clone(), Arc::new(repo)).await?)
+}
+
+async fn changeset_ctx(
+    repo_ctx: &RepoContext<Repo>,
+    changeset_id: ChangesetId,
+    name: &str,
+) -> Result<ChangesetContext<Repo>, Error> {
+    repo_ctx
+        .changeset(changeset_id)
+        .await?
+        .ok_or_else(|| anyhow!("{name} changeset not found"))
+}
+
+async fn build_lfs_flip_pair(
+    ctx: &CoreContext,
+    repo: &Repo,
+    old_lfs: GitLfs,
+    new_lfs: GitLfs,
+) -> Result<(ChangesetId, ChangesetId), Error> {
+    let parent = CreateCommitContext::new_root(ctx, repo)
+        .add_file_with_type_and_lfs("binary_file", "shared blob", FileType::Regular, old_lfs)
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(ctx, repo, vec![parent])
+        .add_file_with_type_and_lfs("binary_file", "shared blob", FileType::Regular, new_lfs)
+        .commit()
+        .await?;
+
+    Ok((parent, child))
+}
+
+async fn lfs_change_paths(
+    changeset: &ChangesetContext<Repo>,
+    other: &ChangesetContext<Repo>,
+    path_restrictions: Option<Vec<MPath>>,
+) -> Result<Vec<String>, Error> {
+    let subtree_copy_sources = manifest::PathTree::default();
+    let excluded_paths = std::collections::HashSet::new();
+    Ok(changeset
+        .get_potential_lfs_changes(
+            other,
+            &path_restrictions,
+            &subtree_copy_sources,
+            &excluded_paths,
+            None,
+            None,
+            usize::MAX,
+        )
+        .await?
+        .into_iter()
+        .map(|diff| diff.path().to_string())
+        .collect())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_detects_lfs_flip(fb: FacebookInit) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::FullContent,
+        GitLfs::canonical_pointer(),
+    )
+    .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, None).await?,
+        vec!["binary_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_detects_executable_lfs_flip(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let parent = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "binary_exe",
+            "shared blob",
+            FileType::Executable,
+            GitLfs::FullContent,
+        )
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, &repo, vec![parent])
+        .add_file_with_type_and_lfs(
+            "binary_exe",
+            "shared blob",
+            FileType::Executable,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, None).await?,
+        vec!["binary_exe"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_detects_immediate_parent_de_lfs_flip(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::canonical_pointer(),
+        GitLfs::FullContent,
+    )
+    .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, None).await?,
+        vec!["binary_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_detects_inherited_across_merge(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    // The path's LFS state was set at root, then inherited unchanged across
+    // a merge before the immediate parent. The supplement still detects the
+    // renormalize-up flip: the candidate filter sees the LFS-pointer change
+    // in the child's bonsai, and the manifest leaves match because LFS
+    // pointers and raw blobs share the same effective content_id.
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+
+    let root = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file("anchor", "root")
+        .commit()
+        .await?;
+    let p0 = CreateCommitContext::new(&ctx, &repo, vec![root])
+        .add_file("p0_marker", "p0")
+        .commit()
+        .await?;
+    let p1 = CreateCommitContext::new(&ctx, &repo, vec![root])
+        .add_file("p1_marker", "p1")
+        .commit()
+        .await?;
+    let merge = CreateCommitContext::new(&ctx, &repo, vec![p0, p1])
+        .add_file("merge_marker", "m")
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, &repo, vec![merge])
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let merge_ctx = changeset_ctx(&repo_ctx, merge, "merge").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &merge_ctx, None).await?,
+        vec!["binary_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_emits_re_recorded_state(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    // Documents the producer-invariant assumption: if a commit synthetically
+    // re-records a `Change` with the same content+type+LFS as the parent's
+    // effective state, the supplement reports it as a flip. Real producers
+    // (git import, Sapling commits, the renormalization tool) never emit
+    // such no-op entries -- they only record actual changes -- so this case
+    // is unreachable in production. If that invariant ever breaks, this
+    // test will keep emitting and downstream consumers will see spurious
+    // "changed" paths.
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let a = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .add_file("anchor", "a")
+        .commit()
+        .await?;
+    let b = CreateCommitContext::new(&ctx, &repo, vec![a])
+        .add_file("anchor", "b")
+        .commit()
+        .await?;
+    let c = CreateCommitContext::new(&ctx, &repo, vec![b])
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let b_ctx = changeset_ctx(&repo_ctx, b, "B").await?;
+    let c_ctx = changeset_ctx(&repo_ctx, c, "C").await?;
+
+    assert_eq!(
+        lfs_change_paths(&c_ctx, &b_ctx, None).await?,
+        vec!["binary_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_skips_inherited_de_lfs_flip(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    // De-LFS direction (pointer -> raw) where the immediate parent did NOT
+    // record an LFS marker for the path. The prefilter requires either side
+    // to record an LFS marker, so this case is intentionally skipped — a
+    // documented limitation.
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let a = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .add_file("anchor", "a")
+        .commit()
+        .await?;
+    let b = CreateCommitContext::new(&ctx, &repo, vec![a])
+        .add_file("anchor", "b")
+        .commit()
+        .await?;
+    let c = CreateCommitContext::new(&ctx, &repo, vec![b])
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let b_ctx = changeset_ctx(&repo_ctx, b, "B").await?;
+    let c_ctx = changeset_ctx(&repo_ctx, c, "C").await?;
+
+    assert_eq!(
+        lfs_change_paths(&c_ctx, &b_ctx, None).await?,
+        Vec::<String>::new(),
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_excludes_non_lfs_changes(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let parent = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "raw_file",
+            "raw content",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file_with_type_and_lfs(
+            "lfs_file",
+            "shared",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, &repo, vec![parent])
+        .add_file_with_type_and_lfs(
+            "raw_file",
+            "raw content",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file_with_type_and_lfs("lfs_file", "shared", FileType::Regular, GitLfs::FullContent)
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, None).await?,
+        vec!["lfs_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_respects_path_restrictions(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let parent = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "included/lfs_file",
+            "shared",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file_with_type_and_lfs(
+            "excluded/lfs_file",
+            "shared",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .commit()
+        .await?;
+    let child = CreateCommitContext::new(&ctx, &repo, vec![parent])
+        .add_file_with_type_and_lfs(
+            "included/lfs_file",
+            "shared",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .add_file_with_type_and_lfs(
+            "excluded/lfs_file",
+            "shared",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    let restrictions = Some(vec![MPath::try_from("included")?]);
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, restrictions).await?,
+        vec!["included/lfs_file"],
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_get_potential_lfs_changes_returns_empty_when_repo_lfs_disabled(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = test_repo_factory::build_empty(fb).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::FullContent,
+        GitLfs::canonical_pointer(),
+    )
+    .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    assert_eq!(
+        lfs_change_paths(&child_ctx, &parent_ctx, None).await?,
+        Vec::<String>::new(),
+    );
 
     Ok(())
 }
