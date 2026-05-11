@@ -72,6 +72,7 @@ rust_unittest(
         ":restricted_paths",
         "//common/rust/shed/fbinit:fbinit",
         "//common/rust/shed/fbinit:fbinit-tokio",
+        "//common/rust/shed/justknobs_stub:justknobs",
         "//eden/mononoke/blobstore:blobstore",
         "//eden/mononoke/common/metadata:metadata",
         "//eden/mononoke/common/mononoke_macros:mononoke_macros",

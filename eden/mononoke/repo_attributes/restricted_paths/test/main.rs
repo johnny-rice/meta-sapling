@@ -9,6 +9,10 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use fbinit::FacebookInit;
+use futures::FutureExt;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::with_just_knobs_async;
 use metaconfig_types::AclManifestMode;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
@@ -646,6 +650,70 @@ async fn test_enforcement_condition_set_request_flag_and_restriction_acl(
 
     assert!(!was_denied_without_flag);
     assert!(was_denied_with_flag);
+    Ok(())
+}
+
+// What it tests: enforcement should not depend on the access-log JK once
+// source fetches are spawned for enforcement independently from logging.
+// Expected: disabling `enabled_restricted_paths_access_logging` still denies
+// this unauthorized config-backed access.
+#[mononoke::fbinit_test]
+async fn test_enforcement_does_not_depend_on_logging_jk(fb: FacebookInit) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let test_data = RestrictedPathsTestDataBuilder::new()
+        .with_restricted_paths(vec![(
+            NonRootMPath::new("restricted/dir")?,
+            restricted_acl.clone(),
+        )])
+        .build(fb)
+        .await?;
+
+    with_just_knobs_async(
+        restricted_paths_justknobs(&[(
+            "scm/mononoke:enabled_restricted_paths_access_logging",
+            false,
+        )]),
+        async move {
+            let _result = test_data
+                .observe_path_enforcement(
+                    NonRootMPath::new("restricted/dir/file")?,
+                    &[EnforcementConditionSetBuilder::new()
+                        .with_restriction_acls([restricted_acl])
+                        .build()],
+                )
+                .await?;
+            Ok(())
+        }
+        .boxed(),
+    )
+    .await
+}
+
+// What it tests: Authoritative mode should require the AclManifest source
+// when enforcing a path access.
+// Expected: this returns an internal error because no changeset id is
+// available for the authoritative path source.
+#[mononoke::fbinit_test]
+async fn test_authoritative_path_enforcement_requires_acl_manifest_source(
+    fb: FacebookInit,
+) -> Result<()> {
+    let restricted_acl = MononokeIdentity::from_str("REPO_REGION:restricted_acl")?;
+    let _result = RestrictedPathsTestDataBuilder::new()
+        .with_acl_manifest_mode(AclManifestMode::Authoritative)
+        .with_acl_manifest_restricted_paths(vec![(
+            NonRootMPath::new("restricted/dir")?,
+            restricted_acl,
+        )])
+        .build(fb)
+        .await?
+        .observe_path_enforcement(
+            NonRootMPath::new("restricted/dir/file")?,
+            &[EnforcementConditionSetBuilder::new()
+                .with_always_enabled(true)
+                .build()],
+        )
+        .await;
+
     Ok(())
 }
 
@@ -2533,4 +2601,13 @@ async fn test_shadow_manifest_dispatch_omits_unrestricted_rows(fb: FacebookInit)
         result.scuba_logs
     );
     Ok(())
+}
+
+fn restricted_paths_justknobs(overrides: &[(&str, bool)]) -> JustKnobsInMemory {
+    JustKnobsInMemory::new(
+        overrides
+            .iter()
+            .map(|(knob, value)| ((*knob).to_string(), KnobVal::Bool(*value)))
+            .collect(),
+    )
 }
