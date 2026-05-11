@@ -468,43 +468,13 @@ pub async fn spawn_enforce_restricted_path_access<'a, 'b>(
     switch_value: &'b str,
     cs_id: Option<ChangesetId>,
 ) -> Result<(), RestrictedPathsError<'a>> {
-    // Always log first, but get the task handle so we can get the access check
-    // result if needed.
-    let has_auth_task =
-        spawn_log_restricted_path_access(ctx, restricted_paths.clone(), path, switch_value, cs_id)?;
-
-    let config = restricted_paths.config();
-    if !config.enforcement_enabled || config.enforcement_condition_sets.is_empty() {
-        return Ok(());
-    }
-
-    let pre_filter_result =
-        restriction_check::pre_filter_condition_sets(ctx, &config.enforcement_condition_sets);
-    if matches!(pre_filter_result, PreFilterResult::NoMatch) {
-        return Ok(());
-    }
-
-    // Conditional enforcement matched - check authorization
-    let check_result = if let Some(has_auth_handle) = has_auth_task {
-        has_auth_handle.await.map_err(anyhow::Error::from)??
-    } else {
-        // Either logging was disabled or there were no restricted paths
-        // Access logging is a pre-requisite for enforcement!
-        RestrictionCheckResult {
-            has_authorization: true,
-            restriction_roots: vec![],
-        }
-    };
-
-    if should_enforce_check_result(&restricted_paths, &check_result, &pre_filter_result)
-        && !check_result.has_authorization
-    {
-        return Err(RestrictedPathsError::AuthorizationError(
-            RestrictedPathAccessType::Path(path),
-        ));
-    }
-
-    Ok(())
+    spawn_enforce_restricted_access(
+        ctx,
+        restricted_paths.clone(),
+        || spawn_log_restricted_path_access(ctx, restricted_paths, path, switch_value, cs_id),
+        || RestrictedPathsError::AuthorizationError(RestrictedPathAccessType::Path(path)),
+    )
+    .await
 }
 
 /// Helper function to spawn an async task that logs access to restricted paths by manifest ID.
@@ -580,16 +550,46 @@ pub async fn spawn_enforce_restricted_manifest_access<'a>(
     switch_value: &'a str,
     cs_id: Option<ChangesetId>,
 ) -> Result<(), RestrictedPathsError<'a>> {
-    // Always log first, but get the task handle so we can get the access check
-    // result if needed.
-    let has_auth_task = spawn_log_restricted_manifest_access(
+    let manifest_id_for_log = manifest_id.clone();
+    let manifest_type_for_log = manifest_type.clone();
+    spawn_enforce_restricted_access(
         ctx,
         restricted_paths.clone(),
-        manifest_id.clone(),
-        manifest_type.clone(),
-        switch_value,
-        cs_id,
-    )?;
+        || {
+            spawn_log_restricted_manifest_access(
+                ctx,
+                restricted_paths,
+                manifest_id_for_log,
+                manifest_type_for_log,
+                switch_value,
+                cs_id,
+            )
+        },
+        || {
+            RestrictedPathsError::AuthorizationError(RestrictedPathAccessType::Manifest(
+                manifest_id,
+            ))
+        },
+    )
+    .await
+}
+
+/// Shared path/manifest enforcement orchestration.
+///
+/// Path and manifest access differ only in how they start the logging lookup
+/// and how they report an authorization error. This helper keeps the common
+/// control flow in one place: start logging, apply request-local enforcement
+/// filters, await the logging result only when enforcement may apply, and
+/// translate a matched unauthorized result into the caller-specific error.
+async fn spawn_enforce_restricted_access<'a>(
+    ctx: &CoreContext,
+    restricted_paths: Arc<RestrictedPaths>,
+    spawn_logging: impl FnOnce() -> Result<Option<task::JoinHandle<Result<RestrictionCheckResult>>>>,
+    authorization_error: impl FnOnce() -> RestrictedPathsError<'a>,
+) -> Result<(), RestrictedPathsError<'a>> {
+    // Always log first, but get the task handle so we can get the access check
+    // result if needed.
+    let has_auth_task = spawn_logging()?;
 
     let config = restricted_paths.config();
     if !config.enforcement_enabled || config.enforcement_condition_sets.is_empty() {
@@ -606,6 +606,8 @@ pub async fn spawn_enforce_restricted_manifest_access<'a>(
     let check_result = if let Some(has_auth_handle) = has_auth_task {
         has_auth_handle.await.map_err(anyhow::Error::from)??
     } else {
+        // Either logging was disabled or there were no restricted paths
+        // Access logging is a pre-requisite for enforcement!
         RestrictionCheckResult {
             has_authorization: true,
             restriction_roots: vec![],
@@ -615,9 +617,7 @@ pub async fn spawn_enforce_restricted_manifest_access<'a>(
     if should_enforce_check_result(&restricted_paths, &check_result, &pre_filter_result)
         && !check_result.has_authorization
     {
-        return Err(RestrictedPathsError::AuthorizationError(
-            RestrictedPathAccessType::Manifest(manifest_id),
-        ));
+        return Err(authorization_error());
     }
 
     Ok(())
