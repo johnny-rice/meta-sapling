@@ -5,6 +5,7 @@
  * GNU General Public License version 2.
  */
 
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -64,5 +65,6 @@ fn path_restriction_check() -> Result<PathRestrictionCheckResult> {
             request_acl: "REPO_REGION:test_acl".to_string(),
         },
         AuthorizationCheckResult::new(true, false, false),
+        permission_checker::MononokeIdentity::from_str("REPO_REGION:test_acl")?,
     ))
 }

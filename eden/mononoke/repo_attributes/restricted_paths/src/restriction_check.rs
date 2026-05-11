@@ -133,16 +133,19 @@ impl AuthorizationCheckResult {
 pub struct PathRestrictionCheckResult {
     restriction_info: PathRestrictionInfo,
     authorization: AuthorizationCheckResult,
+    repo_region_acl: MononokeIdentity,
 }
 
 impl PathRestrictionCheckResult {
     pub(crate) fn new(
         restriction_info: PathRestrictionInfo,
         authorization: AuthorizationCheckResult,
+        repo_region_acl: MononokeIdentity,
     ) -> Self {
         Self {
             restriction_info,
             authorization,
+            repo_region_acl,
         }
     }
 
@@ -167,16 +170,19 @@ impl PathRestrictionCheckResult {
 pub struct ManifestRestrictionCheckResult {
     restriction_info: ManifestRestrictionInfo,
     authorization: AuthorizationCheckResult,
+    repo_region_acl: MononokeIdentity,
 }
 
 impl ManifestRestrictionCheckResult {
     pub(crate) fn new(
         restriction_info: ManifestRestrictionInfo,
         authorization: AuthorizationCheckResult,
+        repo_region_acl: MononokeIdentity,
     ) -> Self {
         Self {
             restriction_info,
             authorization,
+            repo_region_acl,
         }
     }
 
@@ -264,8 +270,8 @@ impl std::error::Error for SourceRestrictionError {
 pub(crate) trait SourceRestrictionCheck: Clone {
     /// Caller authorization result for this source result.
     fn authorization(&self) -> &AuthorizationCheckResult;
-    /// Repo-region ACL associated with this restriction.
-    fn repo_region_acl(&self) -> &str;
+    /// Parsed repo-region ACL associated with this restriction.
+    fn repo_region_identity(&self) -> &MononokeIdentity;
     /// Restriction root when the source can report one.
     fn restriction_root(&self) -> Option<&NonRootMPath>;
     /// Whether this check type carries restriction roots independent of source.
@@ -277,8 +283,8 @@ impl SourceRestrictionCheck for PathRestrictionCheckResult {
         &self.authorization
     }
 
-    fn repo_region_acl(&self) -> &str {
-        &self.restriction_info().repo_region_acl
+    fn repo_region_identity(&self) -> &MononokeIdentity {
+        &self.repo_region_acl
     }
 
     fn restriction_root(&self) -> Option<&NonRootMPath> {
@@ -295,8 +301,8 @@ impl SourceRestrictionCheck for ManifestRestrictionCheckResult {
         &self.authorization
     }
 
-    fn repo_region_acl(&self) -> &str {
-        &self.restriction_info().repo_region_acl
+    fn repo_region_identity(&self) -> &MononokeIdentity {
+        &self.repo_region_acl
     }
 
     fn restriction_root(&self) -> Option<&NonRootMPath> {
@@ -333,7 +339,7 @@ impl SourceRestrictionSummary {
             .any(|check| check.authorization().is_rollout_allowlisted());
         let repo_region_acls = checks
             .iter()
-            .map(|check| check.repo_region_acl().to_string())
+            .map(|check| check.repo_region_identity().to_string())
             .collect();
         let restriction_roots = checks
             .iter()
@@ -739,7 +745,7 @@ pub async fn check_path_restriction_infos(
         check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
     stream::iter(restriction_info)
         .map(|restriction_info| async move {
-            let authorization = check_restriction_authorization(
+            let (authorization, acl) = check_restriction_authorization(
                 ctx,
                 restricted_paths,
                 &restriction_info.repo_region_acl,
@@ -749,6 +755,7 @@ pub async fn check_path_restriction_infos(
             Ok(PathRestrictionCheckResult::new(
                 restriction_info,
                 authorization,
+                acl,
             ))
         })
         .buffered(100)
@@ -796,6 +803,7 @@ pub async fn check_config_path_restriction_infos(
             Ok(PathRestrictionCheckResult::new(
                 restriction_info,
                 authorization,
+                acl,
             ))
         })
         .buffered(100)
@@ -816,7 +824,7 @@ async fn check_manifest_restriction_infos(
         check_restricted_paths_allowlist_authorization(ctx, restricted_paths).await?;
     stream::iter(restriction_info)
         .map(|restriction_info| async move {
-            let authorization = check_restriction_authorization(
+            let (authorization, acl) = check_restriction_authorization(
                 ctx,
                 restricted_paths,
                 &restriction_info.repo_region_acl,
@@ -826,6 +834,7 @@ async fn check_manifest_restriction_infos(
             Ok(ManifestRestrictionCheckResult::new(
                 restriction_info,
                 authorization,
+                acl,
             ))
         })
         .buffered(100)
@@ -838,11 +847,17 @@ async fn check_restriction_authorization(
     restricted_paths: &RestrictedPaths,
     repo_region_acl: &str,
     allowlist_authorization: AllowlistAuthorization,
-) -> Result<AuthorizationCheckResult> {
+) -> Result<(AuthorizationCheckResult, MononokeIdentity)> {
     let acl = MononokeIdentity::from_str(repo_region_acl)
         .with_context(|| format!("Failed to parse repo_region_acl {repo_region_acl}"))?;
-    check_restriction_authorization_with_acl(ctx, restricted_paths, &acl, allowlist_authorization)
-        .await
+    let authorization = check_restriction_authorization_with_acl(
+        ctx,
+        restricted_paths,
+        &acl,
+        allowlist_authorization,
+    )
+    .await?;
+    Ok((authorization, acl))
 }
 
 async fn check_restriction_authorization_with_acl(

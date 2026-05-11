@@ -6,6 +6,7 @@
  */
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -16,6 +17,7 @@ use metaconfig_types::AclManifestMode;
 use mononoke_macros::mononoke;
 use mononoke_types::NonRootMPath;
 use mononoke_types::RepositoryId;
+use permission_checker::MononokeIdentity;
 use scuba_ext::MononokeScubaSampleBuilder;
 use serde_json::Value;
 use serde_json::json;
@@ -468,6 +470,7 @@ fn restricted_path_result(
     restriction_path: &str,
 ) -> Result<SourceRestrictionResult<PathRestrictionCheckResult>> {
     let repo_region_acl = repo_region_acl(acl_name);
+    let repo_region_identity = MononokeIdentity::from_str(&repo_region_acl)?;
     Ok(Ok(SourceRestrictionChecks::new(vec![
         PathRestrictionCheckResult::new(
             PathRestrictionInfo {
@@ -476,6 +479,7 @@ fn restricted_path_result(
                 request_acl: repo_region_acl,
             },
             authorization_result(has_authorization, has_acl_access),
+            repo_region_identity,
         ),
     ])))
 }
@@ -487,6 +491,7 @@ fn restricted_manifest_result(
     restriction_path: Option<&str>,
 ) -> Result<SourceRestrictionResult<ManifestRestrictionCheckResult>> {
     let repo_region_acl = repo_region_acl(acl_name);
+    let repo_region_identity = MononokeIdentity::from_str(&repo_region_acl)?;
     Ok(Ok(SourceRestrictionChecks::new(vec![
         ManifestRestrictionCheckResult::new(
             ManifestRestrictionInfo {
@@ -495,6 +500,7 @@ fn restricted_manifest_result(
                 request_acl: repo_region_acl,
             },
             authorization_result(has_authorization, has_acl_access),
+            repo_region_identity,
         ),
     ])))
 }
