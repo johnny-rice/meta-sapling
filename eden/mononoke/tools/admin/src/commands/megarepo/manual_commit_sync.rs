@@ -64,7 +64,7 @@ pub async fn manual_commit_sync<R: CrossRepo>(
 
         let remapped_parents = source_parents
             .into_iter()
-            .zip(target_repo_parents.into_iter())
+            .zip(target_repo_parents)
             .collect::<HashMap<_, _>>();
 
         unsafe_always_rewrite_sync_commit(
