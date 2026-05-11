@@ -87,7 +87,6 @@ pub struct RestrictedPathsTestData {
     /// AclManifest-backed restrictions materialized as `.slacl` files.
     acl_manifest_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
     acl_manifest_mode: AclManifestMode,
-    use_acl_manifest: bool,
     /// Repo regions config for recreating ACLs: (region_name, usernames)
     repo_regions_config: Vec<(String, Vec<String>)>,
     groups_config: Vec<(String, Vec<String>)>,
@@ -98,7 +97,6 @@ pub struct RestrictedPathsTestDataBuilder {
     config_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
     acl_manifest_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
     acl_manifest_mode: AclManifestMode,
-    use_acl_manifest: bool,
     tooling_allowlist_group: Option<String>,
     /// Store the repo regions config for recreating ACLs in enforcement scenarios
     repo_regions_config: Vec<(String, Vec<String>)>,
@@ -320,7 +318,6 @@ impl RestrictedPathsTestDataBuilder {
             config_restricted_paths: vec![],
             acl_manifest_restricted_paths: vec![],
             acl_manifest_mode: AclManifestMode::Disabled,
-            use_acl_manifest: true,
             tooling_allowlist_group: None,
             groups_config: vec![],
             repo_regions_config: vec![],
@@ -359,11 +356,6 @@ impl RestrictedPathsTestDataBuilder {
 
     pub fn with_acl_manifest_mode(mut self, acl_manifest_mode: AclManifestMode) -> Self {
         self.acl_manifest_mode = acl_manifest_mode;
-        self
-    }
-
-    pub fn with_use_acl_manifest(mut self, use_acl_manifest: bool) -> Self {
-        self.use_acl_manifest = use_acl_manifest;
         self
     }
 
@@ -500,7 +492,6 @@ impl RestrictedPathsTestDataBuilder {
             config_restricted_paths: self.config_restricted_paths,
             acl_manifest_restricted_paths: self.acl_manifest_restricted_paths,
             acl_manifest_mode: self.acl_manifest_mode,
-            use_acl_manifest: self.use_acl_manifest,
             repo_regions_config: self.repo_regions_config,
             groups_config: self.groups_config,
             tooling_allowlist_group: self.tooling_allowlist_group,
@@ -579,7 +570,6 @@ impl RestrictedPathsTestData {
             &self.ctx,
             self.config_restricted_paths.clone(),
             self.acl_manifest_mode,
-            self.use_acl_manifest,
             self.tooling_allowlist_group.clone(),
             acls,
             temp_log_path.clone(),
@@ -630,7 +620,6 @@ impl RestrictedPathsTestData {
             &self.ctx,
             self.config_restricted_paths.clone(),
             self.acl_manifest_mode,
-            self.use_acl_manifest,
             self.tooling_allowlist_group.clone(),
             acls,
             temp_log_path.clone(),
@@ -710,7 +699,6 @@ impl RestrictedPathsTestData {
             &self.ctx,
             self.config_restricted_paths.clone(),
             self.acl_manifest_mode,
-            self.use_acl_manifest,
             self.tooling_allowlist_group.clone(),
             acls,
             temp_log_path.clone(),
@@ -1125,7 +1113,6 @@ async fn setup_test_repo(
     ctx: &CoreContext,
     config_restricted_paths: Vec<(NonRootMPath, MononokeIdentity)>,
     acl_manifest_mode: AclManifestMode,
-    use_acl_manifest: bool,
     tooling_allowlist_group: Option<String>,
     acls: Acls,
     log_file_path: std::path::PathBuf,
@@ -1188,7 +1175,6 @@ async fn setup_test_repo(
         config_based,
         acl_provider,
         scuba_builder,
-        use_acl_manifest,
         repo_derived_data,
     )?);
 

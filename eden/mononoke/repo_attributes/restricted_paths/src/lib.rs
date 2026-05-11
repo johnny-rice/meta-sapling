@@ -81,8 +81,6 @@ pub struct RestrictedPaths {
     acl_provider: Arc<dyn AclProvider>,
     /// Scuba sample builder for logging access to restricted paths
     scuba: MononokeScubaSampleBuilder,
-    /// Whether to use ACL manifest instead of config for restriction lookups.
-    use_acl_manifest: bool,
     /// Repo derived data for deriving ACL manifests.
     repo_derived_data: ArcRepoDerivedData,
 }
@@ -92,24 +90,14 @@ impl RestrictedPaths {
         config_based: Arc<RestrictedPathsConfigBased>,
         acl_provider: Arc<dyn AclProvider>,
         scuba: MononokeScubaSampleBuilder,
-        use_acl_manifest: bool,
         repo_derived_data: ArcRepoDerivedData,
     ) -> Result<Self> {
-        if use_acl_manifest {
+        if !config_based.config().acl_manifest_mode.is_disabled() {
             anyhow::ensure!(
                 repo_derived_data
                     .config()
                     .is_enabled(DerivableType::AclManifests),
-                "use_acl_manifest is true but AclManifest derivation is not enabled for this repo. \
-                 Enable AclManifests in the repo's derived data config."
-            );
-        }
-        if config_based.config().acl_manifest_mode == AclManifestMode::Shadow {
-            anyhow::ensure!(
-                repo_derived_data
-                    .config()
-                    .is_enabled(DerivableType::AclManifests),
-                "acl_manifest_mode is Shadow but AclManifest derivation is not enabled for this repo. \
+                "acl_manifest_mode is enabled but AclManifest derivation is not enabled for this repo. \
                  Enable AclManifests in the repo's derived data config."
             );
         }
@@ -117,7 +105,6 @@ impl RestrictedPaths {
             config_based,
             acl_provider,
             scuba,
-            use_acl_manifest,
             repo_derived_data,
         })
     }
@@ -131,13 +118,11 @@ impl RestrictedPaths {
     }
 
     /// Returns whether this repository may have restricted paths.
-    /// When `use_acl_manifest` is true, restrictions are discovered dynamically
-    /// from `.slacl` files in the repo, so callers cannot treat a false
-    /// config-only lookup as proof that no restricted paths exist.
+    /// When AclManifest mode is enabled, restrictions can be discovered
+    /// dynamically from `.slacl` files in the repo, so callers cannot treat a
+    /// false config-only lookup as proof that no restricted paths exist.
     pub fn may_have_restricted_paths(&self) -> bool {
-        self.use_acl_manifest
-            || self.config_based.has_restricted_paths()
-            || self.config().acl_manifest_mode == AclManifestMode::Shadow
+        !self.config().acl_manifest_mode.is_disabled() || self.config_based.has_restricted_paths()
     }
 
     /// Returns the soft path ACLs configuration.
@@ -152,11 +137,6 @@ impl RestrictedPaths {
 
     pub fn acl_provider(&self) -> &Arc<dyn AclProvider> {
         &self.acl_provider
-    }
-
-    /// Returns whether ACL manifest should be used for restriction lookups.
-    pub fn use_acl_manifest(&self) -> bool {
-        self.use_acl_manifest
     }
 
     // -----------------------------------------------------------------------
@@ -272,7 +252,7 @@ impl RestrictedPaths {
         manifest_type: ManifestType,
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
-        if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
+        if self.config().acl_manifest_mode == AclManifestMode::Shadow {
             return access_log::log_source_comparison_access_by_manifest_if_restricted(
                 self,
                 ctx,
@@ -311,7 +291,7 @@ impl RestrictedPaths {
         // Use config-based lookup directly — this method works with manifest IDs
         // from the restricted paths store, not with changesets, so we always use
         // the config to determine which paths are restricted.
-        // TODO(T248660053): support manifest-based access usign AclManifests.
+        // TODO(T248660053): support manifest-based access using AclManifests.
         let acls = restriction_info::get_config_acls_for_paths(self, &paths);
 
         log_access_to_restricted_path(
@@ -340,7 +320,7 @@ impl RestrictedPaths {
         path: NonRootMPath,
         cs_id: Option<ChangesetId>,
     ) -> Result<RestrictionCheckResult> {
-        if !self.use_acl_manifest && self.config().acl_manifest_mode == AclManifestMode::Shadow {
+        if self.config().acl_manifest_mode == AclManifestMode::Shadow {
             return access_log::log_source_comparison_access_by_path_if_restricted(
                 self, ctx, path, cs_id,
             )
@@ -811,14 +791,9 @@ mod tests {
             acl_manifest_mode: AclManifestMode::Disabled,
             ..Default::default()
         };
-        let _restricted_paths = build_test_restricted_paths_with_options(
-            fb,
-            config,
-            DummyAclProvider::new(fb)?,
-            false,
-            false,
-        )
-        .await?;
+        let _restricted_paths =
+            build_test_restricted_paths_with_options(fb, config, DummyAclProvider::new(fb)?, false)
+                .await?;
 
         assert!(!_restricted_paths.may_have_restricted_paths());
         Ok(())
@@ -832,21 +807,16 @@ mod tests {
             acl_manifest_mode: AclManifestMode::Shadow,
             ..Default::default()
         };
-        let result = build_test_restricted_paths_with_options(
-            fb,
-            config,
-            DummyAclProvider::new(fb)?,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            build_test_restricted_paths_with_options(fb, config, DummyAclProvider::new(fb)?, false)
+                .await;
 
         let err = result.err().ok_or_else(|| {
             anyhow::anyhow!(
                 "expected Shadow construction to fail when AclManifest derivation is disabled"
             )
         })?;
-        assert_error_chain_contains(&err, "acl_manifest_mode is Shadow");
+        assert_error_chain_contains(&err, "acl_manifest_mode is enabled");
         assert_error_chain_contains(&err, "AclManifest derivation is not enabled");
         Ok(())
     }
@@ -860,18 +830,17 @@ mod tests {
             acl_manifest_mode: AclManifestMode::Both,
             ..Default::default()
         };
-        let _result = build_test_restricted_paths_with_options(
-            fb,
-            config,
-            DummyAclProvider::new(fb)?,
-            false,
-            false,
-        )
-        .await;
+        let result =
+            build_test_restricted_paths_with_options(fb, config, DummyAclProvider::new(fb)?, false)
+                .await;
 
-        // TODO(T248660053): assert construction fails until AclManifest
-        // derivation is enabled.
-
+        let err = result.err().ok_or_else(|| {
+            anyhow::anyhow!(
+                "expected Both construction to fail when AclManifest derivation is disabled"
+            )
+        })?;
+        assert_error_chain_contains(&err, "acl_manifest_mode is enabled");
+        assert_error_chain_contains(&err, "AclManifest derivation is not enabled");
         Ok(())
     }
 
@@ -886,42 +855,16 @@ mod tests {
             acl_manifest_mode: AclManifestMode::Authoritative,
             ..Default::default()
         };
-        let _result = build_test_restricted_paths_with_options(
-            fb,
-            config,
-            DummyAclProvider::new(fb)?,
-            false,
-            false,
-        )
-        .await;
-
-        // TODO(T248660053): assert construction fails until AclManifest
-        // derivation is enabled.
-
-        Ok(())
-    }
-
-    // What it tests: legacy `use_acl_manifest = true` validation remains unchanged.
-    // Expected: the legacy failure remains independent from Shadow-mode validation.
-    #[mononoke::fbinit_test]
-    async fn test_legacy_use_acl_manifest_still_requires_acl_manifest_derivation(
-        fb: FacebookInit,
-    ) -> Result<()> {
-        let result = build_test_restricted_paths_with_options(
-            fb,
-            RestrictedPathsConfig::default(),
-            DummyAclProvider::new(fb)?,
-            true,
-            false,
-        )
-        .await;
+        let result =
+            build_test_restricted_paths_with_options(fb, config, DummyAclProvider::new(fb)?, false)
+                .await;
 
         let err = result.err().ok_or_else(|| {
             anyhow::anyhow!(
-                "expected legacy use_acl_manifest construction to fail when AclManifest derivation is disabled"
+                "expected Authoritative construction to fail when AclManifest derivation is disabled"
             )
         })?;
-        assert_error_chain_contains(&err, "use_acl_manifest is true");
+        assert_error_chain_contains(&err, "acl_manifest_mode is enabled");
         assert_error_chain_contains(&err, "AclManifest derivation is not enabled");
         Ok(())
     }
@@ -933,14 +876,9 @@ mod tests {
         let config = RestrictedPathsConfigBuilder::new()
             .with_path_acl_str("restricted/dir", "SERVICE_IDENTITY:restricted_acl")?
             .build();
-        let restricted_paths = build_test_restricted_paths_with_options(
-            fb,
-            config,
-            DummyAclProvider::new(fb)?,
-            false,
-            false,
-        )
-        .await?;
+        let restricted_paths =
+            build_test_restricted_paths_with_options(fb, config, DummyAclProvider::new(fb)?, false)
+                .await?;
         let ctx = CoreContext::test_mock(fb);
         let cs_id = ChangesetId::new(mononoke_types::hash::Blake2::from_byte_array([0u8; 32]));
         let path = NonRootMPath::new("restricted/dir/file")?;

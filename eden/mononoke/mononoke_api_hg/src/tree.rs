@@ -384,6 +384,7 @@ mod tests {
     use maplit::hashmap;
     use mercurial_derivation::DeriveHgChangeset;
     use mercurial_types::NULL_HASH;
+    use metaconfig_types::AclManifestMode;
     use metaconfig_types::RestrictedPathsConfig;
     use metadata::Metadata;
     use mononoke_api::repo::Repo;
@@ -549,6 +550,7 @@ mod tests {
             use_manifest_id_cache: true,
             cache_update_interval_ms: 5,
             conditional_enforcement_acls: Vec::new(),
+            acl_manifest_mode: AclManifestMode::Both,
             ..Default::default()
         };
 
@@ -587,7 +589,6 @@ mod tests {
             config_based,
             acl_provider,
             scuba,
-            true, // use_acl_manifest
             repo_derived_data,
         )?);
 

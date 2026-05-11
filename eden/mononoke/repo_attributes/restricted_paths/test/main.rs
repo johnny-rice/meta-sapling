@@ -2001,7 +2001,7 @@ async fn test_tooling_allowlist_acl_user_not_in_acl(fb: FacebookInit) -> Result<
 }
 
 #[mononoke::fbinit_test]
-async fn test_use_acl_manifest_without_derivation_enabled_fails(fb: FacebookInit) -> Result<()> {
+async fn test_acl_manifest_mode_without_derivation_enabled_fails(fb: FacebookInit) -> Result<()> {
     use context::CoreContext;
     use mononoke_api::Repo as TestRepo;
     use mononoke_types::DerivableType;
@@ -2011,18 +2011,19 @@ async fn test_use_acl_manifest_without_derivation_enabled_fails(fb: FacebookInit
 
     let mut factory = TestRepoFactory::new(ctx.fb)?;
     factory.with_config_override(|repo_config| {
+        repo_config.restricted_paths_config.acl_manifest_mode = AclManifestMode::Shadow;
         let dd_config = repo_config
             .derived_data_config
             .get_active_config_mut()
             .expect("No enabled derived data types config");
         dd_config.types.remove(&DerivableType::AclManifests);
     });
-    // Build should fail because use_acl_manifest is true but AclManifests is not enabled
+    // Build should fail because acl_manifest_mode is enabled but AclManifests is not enabled.
     let result = factory.build::<TestRepo>().await;
 
     let err = result.err().ok_or_else(|| {
         anyhow::anyhow!(
-            "Expected error when use_acl_manifest=true but AclManifest derivation is not enabled"
+            "Expected error when acl_manifest_mode is enabled but AclManifest derivation is not enabled"
         )
     })?;
 
@@ -2050,7 +2051,6 @@ async fn test_shadow_path_dispatch_logs_config_and_acl_manifest_sources(
     let restricted_root = NonRootMPath::new("restricted/dir")?;
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("restricted/dir/a", None)])
@@ -2086,7 +2086,6 @@ async fn test_shadow_path_dispatch_logs_acl_manifest_only_restriction(
     let restricted_root = NonRootMPath::new("acl_manifest_only/dir")?;
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("acl_manifest_only/dir/a", None)])
         .build(fb)
@@ -2120,7 +2119,6 @@ async fn test_shadow_path_dispatch_logs_comparison_errors(fb: FacebookInit) -> R
         ChangesetId::from_str("1111111111111111111111111111111111111111111111111111111111111111")?;
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .build(fb)
         .await?
@@ -2154,7 +2152,6 @@ async fn test_shadow_path_dispatch_skips_acl_manifest_without_changeset(
     let restricted_root = NonRootMPath::new("restricted/dir")?;
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .build(fb)
@@ -2184,7 +2181,6 @@ async fn test_shadow_path_dispatch_skips_acl_manifest_without_changeset(
 async fn test_shadow_path_dispatch_omits_unrestricted_rows(fb: FacebookInit) -> Result<()> {
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_file_path_changes(vec![("unrestricted/dir/a", None)])
         .build(fb)
         .await?
@@ -2208,7 +2204,6 @@ async fn test_shadow_manifest_dispatch_logs_hg_augmented_sources(fb: FacebookIni
 
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("restricted/dir/a", None)])
@@ -2245,7 +2240,6 @@ async fn test_shadow_manifest_dispatch_logs_acl_manifest_only_restriction(
 
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_acl_manifest_restricted_paths(vec![(restricted_root.clone(), restricted_acl)])
         .with_file_path_changes(vec![("restricted/dir/a", None)])
         .build(fb)
@@ -2281,7 +2275,6 @@ async fn test_shadow_manifest_dispatch_skips_unsupported_manifest_types(
 
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_config_restricted_paths(vec![(restricted_root.clone(), restricted_acl.clone())])
         .with_acl_manifest_restricted_paths(vec![(restricted_root, restricted_acl)])
         .with_file_path_changes(vec![("restricted/dir/a", None)])
@@ -2319,7 +2312,6 @@ async fn test_shadow_manifest_dispatch_skips_unsupported_manifest_types(
 async fn test_shadow_manifest_dispatch_logs_comparison_errors(fb: FacebookInit) -> Result<()> {
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .build(fb)
         .await?
         .observe_manifest_access(
@@ -2352,7 +2344,6 @@ async fn test_shadow_manifest_dispatch_logs_comparison_errors(fb: FacebookInit) 
 async fn test_shadow_manifest_dispatch_omits_unrestricted_rows(fb: FacebookInit) -> Result<()> {
     let result = RestrictedPathsTestDataBuilder::new()
         .with_acl_manifest_mode(AclManifestMode::Shadow)
-        .with_use_acl_manifest(false)
         .with_file_path_changes(vec![("unrestricted/dir/a", None)])
         .build(fb)
         .await?

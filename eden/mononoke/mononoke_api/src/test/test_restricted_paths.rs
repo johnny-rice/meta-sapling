@@ -1001,7 +1001,6 @@ async fn create_test_restricted_paths(
         config_based,
         acl_provider,
         scuba,
-        false, // use_acl_manifest — config-based tests; separate repo lacks commit graph
         repo_derived_data,
     )?))
 }

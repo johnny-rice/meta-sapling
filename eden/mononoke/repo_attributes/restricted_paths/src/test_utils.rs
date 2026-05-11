@@ -83,14 +83,13 @@ pub(crate) async fn build_test_restricted_paths(
     config: RestrictedPathsConfig,
     acl_provider: Arc<dyn AclProvider>,
 ) -> Result<RestrictedPaths> {
-    build_test_restricted_paths_with_options(fb, config, acl_provider, false, true).await
+    build_test_restricted_paths_with_options(fb, config, acl_provider, true).await
 }
 
 pub(crate) async fn build_test_restricted_paths_with_options(
     fb: FacebookInit,
     config: RestrictedPathsConfig,
     acl_provider: Arc<dyn AclProvider>,
-    use_acl_manifest: bool,
     acl_manifest_derivation_enabled: bool,
 ) -> Result<RestrictedPaths> {
     let mut factory = TestRepoFactory::new(fb)?;
@@ -114,13 +113,7 @@ pub(crate) async fn build_test_restricted_paths_with_options(
         None,
     ));
 
-    RestrictedPaths::new(
-        config_based,
-        acl_provider,
-        scuba,
-        use_acl_manifest,
-        repo_derived_data,
-    )
+    RestrictedPaths::new(config_based, acl_provider, scuba, repo_derived_data)
 }
 
 pub(crate) async fn add_manifest_entry(

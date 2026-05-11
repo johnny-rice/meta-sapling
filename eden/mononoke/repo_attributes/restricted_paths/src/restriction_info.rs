@@ -219,7 +219,11 @@ pub(crate) async fn get_path_restriction_root_info(
     cs_id: Option<ChangesetId>,
     paths: &[NonRootMPath],
 ) -> Result<Vec<PathRestrictionInfo>> {
-    if !restricted_paths.use_acl_manifest() {
+    if restricted_paths
+        .config()
+        .acl_manifest_mode
+        .uses_manifest_id_store_for_path_lookup()
+    {
         return Ok(get_path_restriction_root_info_from_config(
             restricted_paths,
             paths,
@@ -238,7 +242,11 @@ pub(crate) async fn get_path_restriction_info(
     cs_id: Option<ChangesetId>,
     paths: &[NonRootMPath],
 ) -> Result<Vec<PathRestrictionInfo>> {
-    if !restricted_paths.use_acl_manifest() {
+    if restricted_paths
+        .config()
+        .acl_manifest_mode
+        .uses_manifest_id_store_for_path_lookup()
+    {
         return Ok(get_path_restriction_info_from_config(
             restricted_paths,
             paths,
@@ -281,7 +289,11 @@ pub(crate) async fn find_restricted_descendants(
     cs_id: Option<ChangesetId>,
     roots: Vec<MPath>,
 ) -> Result<Vec<PathRestrictionInfo>> {
-    if !restricted_paths.use_acl_manifest() {
+    if restricted_paths
+        .config()
+        .acl_manifest_mode
+        .uses_manifest_id_store_for_path_lookup()
+    {
         return Ok(find_restricted_descendants_from_config(
             restricted_paths,
             &roots,

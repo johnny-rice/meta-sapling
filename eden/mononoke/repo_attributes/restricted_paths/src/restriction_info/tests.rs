@@ -23,6 +23,7 @@ use mercurial_derivation::RootHgAugmentedManifestId;
 use mercurial_types::HgAugmentedManifestEntry;
 use mercurial_types::HgAugmentedManifestEnvelope;
 use mercurial_types::HgAugmentedManifestId;
+use metaconfig_types::AclManifestMode;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mononoke_types::MPath;
@@ -343,7 +344,10 @@ fn restricted_paths_for_repo(
             .with_repo_id(RepositoryId::new(0)),
     );
     let config_based = Arc::new(RestrictedPathsConfigBased::new(
-        RestrictedPathsConfig::default(),
+        RestrictedPathsConfig {
+            acl_manifest_mode: AclManifestMode::Both,
+            ..Default::default()
+        },
         manifest_id_store,
         None,
     ));
@@ -351,7 +355,6 @@ fn restricted_paths_for_repo(
         config_based,
         DummyAclProvider::new(fb)?,
         MononokeScubaSampleBuilder::with_discard(),
-        true,
         repo.repo_derived_data_arc(),
     )
 }
