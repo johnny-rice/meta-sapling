@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -66,6 +67,11 @@ pub const TEST_CLIENT_MAIN_ID: &str = "user:myusername0";
 
 pub struct RestrictedPathsScenarioResult {
     pub scuba_logs: Vec<ScubaAccessLogSample>,
+}
+
+struct RestrictedPathsScenario {
+    repo: TestRepo,
+    log_path: PathBuf,
 }
 
 pub struct RestrictedPathsTestData {
@@ -546,45 +552,19 @@ impl RestrictedPathsTestData {
         cs_id: Option<ChangesetId>,
         conditional_enforcement_acls: &[MononokeIdentity],
     ) -> Result<RestrictedPathsScenarioResult> {
-        let temp_log_file = tempfile::NamedTempFile::new()?;
-        let temp_log_path = temp_log_file.into_temp_path().keep()?;
+        let scenario = self
+            .setup_scenario_repo(conditional_enforcement_acls)
+            .await?;
 
-        let groups_config: Vec<(&str, Vec<&str>)> = self
-            .groups_config
-            .iter()
-            .map(|(group, users)| (group.as_str(), users.iter().map(|u| u.as_str()).collect()))
-            .collect();
-        let acls = if !self.repo_regions_config.is_empty() {
-            let config_refs: Vec<(&str, Vec<&str>)> = self
-                .repo_regions_config
-                .iter()
-                .map(|(region, users)| {
-                    (region.as_str(), users.iter().map(|u| u.as_str()).collect())
-                })
-                .collect();
-            setup_test_acls_with_groups(config_refs, groups_config)?
-        } else {
-            default_test_acls(groups_config)?
-        };
-        let scenario_repo = setup_test_repo(
-            &self.ctx,
-            self.config_restricted_paths.clone(),
-            self.acl_manifest_mode,
-            self.tooling_allowlist_group.clone(),
-            acls,
-            temp_log_path.clone(),
-            conditional_enforcement_acls,
-        )
-        .await?;
-
-        scenario_repo
+        scenario
+            .repo
             .restricted_paths()
             .log_access_by_path_if_restricted(&self.ctx, path, cs_id)
             .await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         Ok(RestrictedPathsScenarioResult {
-            scuba_logs: deserialize_scuba_log_file(&temp_log_path)?,
+            scuba_logs: deserialize_scuba_log_file(&scenario.log_path)?,
         })
     }
 
@@ -596,38 +576,11 @@ impl RestrictedPathsTestData {
         cs_id: Option<ChangesetId>,
         conditional_enforcement_acls: &[MononokeIdentity],
     ) -> Result<RestrictedPathsScenarioResult> {
-        let temp_log_file = tempfile::NamedTempFile::new()?;
-        let temp_log_path = temp_log_file.into_temp_path().keep()?;
+        let scenario = self
+            .setup_scenario_repo(conditional_enforcement_acls)
+            .await?;
 
-        let groups_config: Vec<(&str, Vec<&str>)> = self
-            .groups_config
-            .iter()
-            .map(|(group, users)| (group.as_str(), users.iter().map(|u| u.as_str()).collect()))
-            .collect();
-        let acls = if !self.repo_regions_config.is_empty() {
-            let config_refs: Vec<(&str, Vec<&str>)> = self
-                .repo_regions_config
-                .iter()
-                .map(|(region, users)| {
-                    (region.as_str(), users.iter().map(|u| u.as_str()).collect())
-                })
-                .collect();
-            setup_test_acls_with_groups(config_refs, groups_config)?
-        } else {
-            default_test_acls(groups_config)?
-        };
-        let scenario_repo = setup_test_repo(
-            &self.ctx,
-            self.config_restricted_paths.clone(),
-            self.acl_manifest_mode,
-            self.tooling_allowlist_group.clone(),
-            acls,
-            temp_log_path.clone(),
-            conditional_enforcement_acls,
-        )
-        .await?;
-
-        let mut commit_ctx = CreateCommitContext::new_root(&self.ctx, &scenario_repo);
+        let mut commit_ctx = CreateCommitContext::new_root(&self.ctx, &scenario.repo);
         for (path, content) in &self.file_path_changes {
             let file_content = content.as_deref().unwrap_or(path.as_str());
             commit_ctx = commit_ctx.add_file(path.as_str(), file_content.to_string());
@@ -638,21 +591,23 @@ impl RestrictedPathsTestData {
             commit_ctx = commit_ctx.add_file(slacl_path.as_str(), slacl_content);
         }
         let bcs_id = commit_ctx.commit().await?;
-        scenario_repo.derive_hg_changeset(&self.ctx, bcs_id).await?;
-        scenario_repo
+        scenario.repo.derive_hg_changeset(&self.ctx, bcs_id).await?;
+        scenario
+            .repo
             .repo_derived_data()
             .derive::<RootHgAugmentedManifestId>(&self.ctx, bcs_id, DerivationPriority::LOW)
             .await?;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        scenario_repo
+        scenario
+            .repo
             .restricted_paths()
             .log_access_by_manifest_if_restricted(&self.ctx, manifest_id, manifest_type, cs_id)
             .await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         Ok(RestrictedPathsScenarioResult {
-            scuba_logs: deserialize_scuba_log_file(&temp_log_path)?,
+            scuba_logs: deserialize_scuba_log_file(&scenario.log_path)?,
         })
     }
 
@@ -668,43 +623,12 @@ impl RestrictedPathsTestData {
         println!(
             "Running scenario {scenario_idx} with expect_enforcement: {expect_enforcement} and conditional_enforcement_acls: {conditional_enforcement_acls:#?}"
         );
-        // Create temp log file for this scenario
-        let temp_log_file = tempfile::NamedTempFile::new()?;
-        let temp_log_path = temp_log_file.into_temp_path().keep()?;
-
-        let groups_config: Vec<(&str, Vec<&str>)> = self
-            .groups_config
-            .iter()
-            .map(|(group, users)| (group.as_str(), users.iter().map(|u| u.as_str()).collect()))
-            .collect();
-
-        // Recreate ACLs from stored config
-        let acls = if !self.repo_regions_config.is_empty() {
-            let config_refs: Vec<(&str, Vec<&str>)> = self
-                .repo_regions_config
-                .iter()
-                .map(|(region, users)| {
-                    (region.as_str(), users.iter().map(|u| u.as_str()).collect())
-                })
-                .collect();
-
-            // let groups_config = self.groups_config.clone();
-            setup_test_acls_with_groups(config_refs, groups_config)?
-            // Some(setup_test_acls(config_refs)?)
-        } else {
-            default_test_acls(groups_config)?
-        };
-
-        let scenario_repo = setup_test_repo(
-            &self.ctx,
-            self.config_restricted_paths.clone(),
-            self.acl_manifest_mode,
-            self.tooling_allowlist_group.clone(),
-            acls,
-            temp_log_path.clone(),
-            conditional_enforcement_acls,
-        )
-        .await?;
+        let RestrictedPathsScenario {
+            repo: scenario_repo,
+            log_path,
+        } = self
+            .setup_scenario_repo(conditional_enforcement_acls)
+            .await?;
 
         // Create commits and derive data.
         // .slacl files are added alongside user files so ACL manifest
@@ -989,7 +913,7 @@ impl RestrictedPathsTestData {
         // the log file
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let scuba_logs = deserialize_scuba_log_file(&temp_log_path)?;
+        let scuba_logs = deserialize_scuba_log_file(&log_path)?;
 
         // Verify expectations if they were set
         if let Some(expected_manifest_entries) = self.expected_manifest_entries.clone() {
@@ -1022,6 +946,46 @@ impl RestrictedPathsTestData {
             "Scenario {scenario_idx} finished SUCCESSFULLY with expect_enforcement: {expect_enforcement} and conditional_enforcement_acls: {conditional_enforcement_acls:#?}"
         );
         Ok(RestrictedPathsScenarioResult { scuba_logs })
+    }
+
+    async fn setup_scenario_repo(
+        &self,
+        conditional_enforcement_acls: &[MononokeIdentity],
+    ) -> Result<RestrictedPathsScenario> {
+        let log_file = tempfile::NamedTempFile::new()?;
+        let log_path = log_file.into_temp_path().keep()?;
+        let acls = self.scenario_acls()?;
+        let repo = setup_test_repo(
+            &self.ctx,
+            self.config_restricted_paths.clone(),
+            self.acl_manifest_mode,
+            self.tooling_allowlist_group.clone(),
+            acls,
+            log_path.clone(),
+            conditional_enforcement_acls,
+        )
+        .await?;
+
+        Ok(RestrictedPathsScenario { repo, log_path })
+    }
+
+    fn scenario_acls(&self) -> Result<Acls> {
+        let groups_config: Vec<(&str, Vec<&str>)> = self
+            .groups_config
+            .iter()
+            .map(|(group, users)| (group.as_str(), users.iter().map(|u| u.as_str()).collect()))
+            .collect();
+
+        if self.repo_regions_config.is_empty() {
+            return default_test_acls(groups_config);
+        }
+
+        let repo_regions_config: Vec<(&str, Vec<&str>)> = self
+            .repo_regions_config
+            .iter()
+            .map(|(region, users)| (region.as_str(), users.iter().map(|u| u.as_str()).collect()))
+            .collect();
+        setup_test_acls_with_groups(repo_regions_config, groups_config)
     }
 }
 
