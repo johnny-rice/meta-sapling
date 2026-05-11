@@ -403,7 +403,7 @@ impl SourceControlServiceImpl {
                 );
                 let client_debug = header(FORWARDED_CLIENT_DEBUG_HEADER)?.is_some();
 
-                header_identities.extend(cats_identities.into_iter());
+                header_identities.extend(cats_identities);
                 let mut metadata = Metadata::new(
                     None,
                     header_identities,
