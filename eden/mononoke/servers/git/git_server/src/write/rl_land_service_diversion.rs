@@ -7,8 +7,10 @@
 
 //! RL Land Service push diversion logic.
 //!
-//! When a push targets a repo whose name matches the configured prefix
-//! (`rl_land_service_repo_prefix` in CommonConfig) and the JustKnob
+//! When a push targets a repo whose name contains the configured marker
+//! (`rl_land_service_repo_prefix` in CommonConfig — historical name; treated
+//! as a substring match so nested repos like `oculus/aosp/vendor/oculus` are
+//! covered alongside top-level `aosp/...` repos) and the JustKnob
 //! `scm/mononoke:divert_aosp_push_to_rl_land_service` is enabled, the Git
 //! server diverts branch creates and moves to the RL Land Service. Other
 //! ref updates (deletes, tags, non-branch refs) are handled by the normal
@@ -67,13 +69,18 @@ const RL_LAND_THRIFT_OVERALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Check whether this push should be diverted to the RL Land Service.
 ///
-/// Repos whose name matches the `rl_land_service_repo_prefix` in
-/// CommonConfig are diverted when the JustKnob
-/// `scm/mononoke:divert_aosp_push_to_rl_land_service` is enabled.
+/// Repos whose name *contains* the value configured in
+/// `rl_land_service_repo_prefix` (CommonConfig) are diverted when the
+/// JustKnob `scm/mononoke:divert_aosp_push_to_rl_land_service` is enabled.
+///
+/// Note: the CommonConfig field is named `_repo_prefix` for historical
+/// reasons but is treated as a substring marker, so both `aosp/foo` and
+/// `oculus/aosp/vendor/oculus` match when the configured value is `aosp/`.
+/// The field can be renamed in a future schema migration.
 pub fn should_divert_to_rl_land_service(
     request_context: &RepositoryRequestContext,
 ) -> anyhow::Result<bool> {
-    let prefix = match &request_context
+    let marker = match &request_context
         .repo_configs
         .common
         .rl_land_service_repo_prefix
@@ -82,7 +89,7 @@ pub fn should_divert_to_rl_land_service(
         _ => return Ok(false),
     };
     let repo_name = request_context.repo.repo_identity().name();
-    let divert = repo_name.starts_with(prefix)
+    let divert = repo_name.contains(marker)
         && justknobs::eval(
             "scm/mononoke:divert_aosp_push_to_rl_land_service",
             None,
