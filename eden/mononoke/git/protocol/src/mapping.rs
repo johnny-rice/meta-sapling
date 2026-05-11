@@ -88,26 +88,41 @@ pub(crate) async fn git_shas_to_bonsais(
         .map(|oid| GitSha1::from_object_id(oid.as_ref()))
         .collect::<Result<Vec<_>>>()
         .context("Error while converting Git object Ids to Git Sha1 during fetch")?;
+    let repo_name = repo.repo_identity().name();
+    let client_correlator = ctx.client_request_info().map(|cri| cri.correlator.as_str());
+    tracing::info!(
+        repo = %repo_name,
+        sha_count = shas.len(),
+        client_correlator = ?client_correlator,
+        "git_shas_to_bonsais: looking up bonsai_git_mapping"
+    );
     // Get the bonsai commits corresponding to the Git shas
     let entries = repo
         .bonsai_git_mapping()
         .get(ctx, BonsaisOrGitShas::GitSha1(shas.clone()))
         .await
-        .with_context(|| {
-            format!(
-                "Failed to fetch bonsai_git_mapping for repo {}",
-                repo.repo_identity().name()
-            )
-        })?;
+        .with_context(|| format!("Failed to fetch bonsai_git_mapping for repo {}", repo_name))?;
     // Filter out the git shas for which we don't have an entry in the bonsai_git_mapping table
     // These are likely annotated tags which need to be resolved separately
     let tag_shas = shas
         .into_iter()
         .filter(|&sha| !entries.iter().any(|entry| entry.git_sha1 == sha))
         .collect::<Vec<_>>();
+    tracing::info!(
+        repo = %repo_name,
+        mapped_count = entries.len(),
+        unmapped_tag_count = tag_shas.len(),
+        client_correlator = ?client_correlator,
+        "git_shas_to_bonsais: bonsai_git_mapping done, resolving tags"
+    );
     let commit_tag_mappings = tagged_commits(ctx, repo, tag_shas, refs_source)
         .await
         .context("Error while resolving annotated tags to their commits")?;
+    tracing::info!(
+        repo = %repo_name,
+        client_correlator = ?client_correlator,
+        "git_shas_to_bonsais: tagged_commits resolved"
+    );
     Ok(TranslatedShas::new(
         entries.into_iter().map(|entry| entry.bcs_id).collect(),
         commit_tag_mappings,
@@ -218,6 +233,14 @@ pub(crate) async fn tagged_commits(
     if git_shas.is_empty() {
         return Ok(CommitTagMappings::default());
     }
+    let repo_name = repo.repo_identity().name();
+    let client_correlator = ctx.client_request_info().map(|cri| cri.correlator.as_str());
+    tracing::info!(
+        repo = %repo_name,
+        tag_sha_count = git_shas.len(),
+        client_correlator = ?client_correlator,
+        "tagged_commits: resolving tag shas via bonsai_tag_mapping"
+    );
     let mut non_tag_shas = git_shas.iter().cloned().collect::<FxHashSet<GitSha1>>();
     // Fetch the names of the tags corresponding to the tag object represented by the input object ids
     let tag_names = repo
@@ -232,6 +255,13 @@ pub(crate) async fn tagged_commits(
         })
         .collect::<FxHashSet<String>>();
     let tag_names = Arc::new(tag_names);
+    tracing::info!(
+        repo = %repo_name,
+        resolved_tags = tag_names.len(),
+        refs_source = ?refs_source,
+        client_correlator = ?client_correlator,
+        "tagged_commits: bonsai_tag_mapping done, calling list_tags"
+    );
     // Fetch the commits pointed to by those tags using the same refs_source
     // as the rest of the fetch to ensure consistency
     let tagged_commits = list_tags(ctx, repo, refs_source).await.map(|entries| {

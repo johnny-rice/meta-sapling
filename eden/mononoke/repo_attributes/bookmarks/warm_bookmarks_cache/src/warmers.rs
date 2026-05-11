@@ -73,7 +73,21 @@ pub fn create_public_phase_warmer(_ctx: &CoreContext, phases: ArcPhases) -> Warm
         move |ctx: &CoreContext, cs_id: ChangesetId| {
             cloned!(phases);
             async move {
+                let client_correlator =
+                    ctx.client_request_info().map(|cri| cri.correlator.as_str());
+                tracing::info!(
+                    changeset = %cs_id,
+                    client_correlator = ?client_correlator,
+                    "phases warmer: calling add_reachable_as_public"
+                );
+                let start = std::time::Instant::now();
                 phases.add_reachable_as_public(ctx, vec![cs_id]).await?;
+                tracing::info!(
+                    changeset = %cs_id,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    client_correlator = ?client_correlator,
+                    "phases warmer: add_reachable_as_public completed"
+                );
                 Ok(())
             }
             .boxed()
@@ -83,9 +97,24 @@ pub fn create_public_phase_warmer(_ctx: &CoreContext, phases: ArcPhases) -> Warm
     let is_warm: Box<IsWarmFn> = Box::new(move |ctx: &CoreContext, cs_id: ChangesetId| {
         cloned!(phases);
         async move {
+            let client_correlator = ctx.client_request_info().map(|cri| cri.correlator.as_str());
+            tracing::info!(
+                changeset = %cs_id,
+                client_correlator = ?client_correlator,
+                "phases is_warm: calling get_public (may trigger mark_reachable_as_public)"
+            );
+            let start = std::time::Instant::now();
             let maybe_public = phases
                 .get_public(ctx, vec![cs_id], false /* ephemeral derive */)
                 .await?;
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                changeset = %cs_id,
+                elapsed_ms = elapsed_ms as u64,
+                is_public = maybe_public.contains(&cs_id),
+                client_correlator = ?client_correlator,
+                "phases is_warm: get_public completed"
+            );
 
             Ok(maybe_public.contains(&cs_id))
         }
