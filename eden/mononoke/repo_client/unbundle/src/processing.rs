@@ -292,6 +292,7 @@ async fn run_pushrebase(
                 &authz,
                 false, // We will log new commits locally
                 force_local_pushrebase,
+                None, // merge_resolution_override
             )
             .await;
             let (pushrebased_rev, pushrebased_changesets) = match outcome {

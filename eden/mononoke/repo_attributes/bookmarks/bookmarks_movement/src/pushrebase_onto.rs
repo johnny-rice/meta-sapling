@@ -44,6 +44,7 @@ pub struct PushrebaseOntoBookmarkOp<'op> {
     cross_repo_push_source: CrossRepoPushSource,
     pushvars: Option<&'op HashMap<String, Bytes>>,
     log_new_public_commits_to_scribe: bool,
+    merge_resolution_override: Option<bool>,
 }
 
 impl<'op> PushrebaseOntoBookmarkOp<'op> {
@@ -58,6 +59,7 @@ impl<'op> PushrebaseOntoBookmarkOp<'op> {
             cross_repo_push_source: CrossRepoPushSource::NativeToThisRepo,
             pushvars: None,
             log_new_public_commits_to_scribe: false,
+            merge_resolution_override: None,
         }
     }
 
@@ -94,6 +96,13 @@ impl<'op> PushrebaseOntoBookmarkOp<'op> {
         self
     }
 
+    /// Per-request override for `pushrebase_enable_merge_resolution`.
+    /// `None` defers to the JustKnob; `Some(_)` wins.
+    pub fn with_merge_resolution_override(mut self, override_value: Option<bool>) -> Self {
+        self.merge_resolution_override = override_value;
+        self
+    }
+
     pub async fn run(
         self,
         ctx: &'op CoreContext,
@@ -124,6 +133,7 @@ impl<'op> PushrebaseOntoBookmarkOp<'op> {
             // Bookmark config overrides repo flags.rewritedates config
             flags.rewritedates = rewritedates;
         }
+        flags.merge_resolution_override = self.merge_resolution_override;
 
         ctx.scuba()
             .clone()

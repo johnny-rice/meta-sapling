@@ -53,6 +53,10 @@ struct LandChangesetRequest {
 
   /// Service identity to use for this commit creation.
   8: optional string service_identity;
+
+  /// Per-request override for `pushrebase_enable_merge_resolution`.
+  /// `None` defers to the JustKnob; `true`/`false` force MR on/off.
+  9: optional bool merge_resolution_override;
 }
 
 @rust.Exhaustive

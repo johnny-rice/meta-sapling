@@ -39,11 +39,13 @@ impl<'a, R: Repo> PushrebaseClient for LocalPushrebaseClient<'a, R> {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        merge_resolution_override: Option<bool>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError> {
         let mut op = PushrebaseOntoBookmarkOp::new(bookmark, changesets)
             .with_pushvars(pushvars)
             .with_push_source(cross_repo_push_source)
-            .with_bookmark_restrictions(bookmark_restrictions);
+            .with_bookmark_restrictions(bookmark_restrictions)
+            .with_merge_resolution_override(merge_resolution_override);
         if log_new_public_commits_to_scribe {
             op = op.log_new_public_commits_to_scribe();
         }

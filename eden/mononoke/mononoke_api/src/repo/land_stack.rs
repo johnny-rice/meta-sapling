@@ -189,6 +189,7 @@ impl<R: MononokeRepo> RepoContext<R> {
                 self.authorization_context(),
                 true, // log_new_public_commits_to_scribe
                 force_local_pushrebase,
+                None, // merge_resolution_override
             )
             .await?;
             // Convert response back, finishing the land on the small repo
@@ -208,6 +209,7 @@ impl<R: MononokeRepo> RepoContext<R> {
                 self.authorization_context(),
                 true, // log_new_public_commits_to_scribe
                 force_local_pushrebase,
+                None, // merge_resolution_override
             )
             .await?
         };

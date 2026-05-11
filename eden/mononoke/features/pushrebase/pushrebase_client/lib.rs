@@ -31,6 +31,9 @@ use pushrebase::PushrebaseOutcome;
 /// pushrebase to happen remotely.
 pub trait PushrebaseClient: Sync + Send {
     /// Pushrebase the given changesets to the given bookmark.
+    ///
+    /// `merge_resolution_override`: `None` defers to the
+    /// `pushrebase_enable_merge_resolution` JK; `Some(_)` wins.
     async fn pushrebase(
         &self,
         bookmark: &BookmarkKey,
@@ -39,5 +42,6 @@ pub trait PushrebaseClient: Sync + Send {
         cross_repo_push_source: CrossRepoPushSource,
         bookmark_restrictions: BookmarkKindRestrictions,
         log_new_public_commits_to_scribe: bool,
+        merge_resolution_override: Option<bool>,
     ) -> Result<PushrebaseOutcome, BookmarkMovementError>;
 }

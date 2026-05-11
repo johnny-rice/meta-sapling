@@ -1086,6 +1086,11 @@ pub struct PushrebaseFlags {
     /// Bookmarks that use pessimistic locking for pushrebase.
     /// Only effective when the pushrebase_pessimistic_locking JustKnob is enabled.
     pub pessimistic_locking_bookmarks: Vec<BookmarkKey>,
+    /// Per-request override for `pushrebase_enable_merge_resolution`.
+    /// `None` defers to the JustKnob; `Some(_)` wins. Request-scoped,
+    /// never loaded from configerator — set on a cloned `PushrebaseFlags`
+    /// before the pushrebase call (mirrors `rewritedates`).
+    pub merge_resolution_override: Option<bool>,
 }
 
 impl Default for PushrebaseFlags {
@@ -1100,6 +1105,7 @@ impl Default for PushrebaseFlags {
             monitoring_bookmark: None,
             merge_resolution_excluded_path_prefixes: PrefixTrie::new(),
             pessimistic_locking_bookmarks: Vec::new(),
+            merge_resolution_override: None,
         }
     }
 }

@@ -1498,6 +1498,7 @@ mod test {
                         monitoring_bookmark: None,
                         merge_resolution_excluded_path_prefixes: Default::default(),
                         pessimistic_locking_bookmarks: Vec::new(),
+                        merge_resolution_override: None,
                     },
                     block_merges: false,
                     emit_obsmarkers: false,

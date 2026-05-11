@@ -402,6 +402,7 @@ impl Convert for RawPushrebaseParams {
                     .into_iter()
                     .map(BookmarkKey::new)
                     .collect::<Result<Vec<_>>>()?,
+                merge_resolution_override: None, // request-scoped, not loaded from config
             },
             block_merges: self.block_merges.unwrap_or(default.block_merges),
             emit_obsmarkers: self.emit_obsmarkers.unwrap_or(default.emit_obsmarkers),
