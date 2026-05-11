@@ -56,6 +56,7 @@ use git_types::MappedGitCommitId;
 use hooks::CrossRepoPushSource;
 use hooks::HookOutcome;
 use hooks::PushAuthoredBy;
+use itertools::Itertools;
 use manifest::Diff as ManifestDiff;
 use manifest::Entry as ManifestEntry;
 use manifest::ManifestOps;
@@ -941,6 +942,36 @@ impl<R: CommitGraphArc + Clone + Send + Sync + 'static> ChangesetContext<R> {
             })
             .boxed())
     }
+}
+
+/// Merge a sorted `supplement` of `ChangesetPathDiffContext` entries into a
+/// `manifest_vec`. The two inputs are disjoint by construction in the
+/// LFS-renormalize use case (manifest emits only when content_id or
+/// file_type differs; the supplement requires they match), so no tie-break
+/// is needed.
+///
+/// Ordered: classic two-iterator sort-merge by `.path()`. Both inputs must
+/// already be sorted ascending by path.
+///
+/// Unordered: append `supplement` to `manifest_vec` (no ordering guarantee
+/// across the join).
+pub(crate) fn insert_sorted_results<R: MononokeRepo>(
+    manifest_vec: &mut Vec<ChangesetPathDiffContext<R>>,
+    supplement: Vec<ChangesetPathDiffContext<R>>,
+    is_ordered: bool,
+) {
+    if supplement.is_empty() {
+        return;
+    }
+    if !is_ordered {
+        manifest_vec.extend(supplement);
+        return;
+    }
+
+    *manifest_vec = std::mem::take(manifest_vec)
+        .into_iter()
+        .merge_by(supplement, |m, s| m.path() <= s.path())
+        .collect();
 }
 
 impl<R: MononokeRepo> ChangesetContext<R> {
