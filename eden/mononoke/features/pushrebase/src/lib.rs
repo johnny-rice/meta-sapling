@@ -7345,4 +7345,119 @@ line 5.1
 
         Ok(())
     }
+
+    // Bookmark points at a server commit that edited line 1; client commit
+    // edits line 5. Path-level conflict that MR can resolve, vanilla can't.
+    async fn setup_non_overlapping_conflict(
+        ctx: &CoreContext,
+        repo: &PushrebaseTestRepo,
+    ) -> Result<(BonsaiChangeset, BookmarkKey), Error> {
+        let base_content = "line1\nline2\nline3\nline4\nline5\n";
+        let base = CreateCommitContext::new_root(ctx, repo)
+            .add_file("file.txt", base_content)
+            .commit()
+            .await?;
+
+        let server_content = "modified_line1\nline2\nline3\nline4\nline5\n";
+        let server = CreateCommitContext::new(ctx, repo, vec![base])
+            .add_file("file.txt", server_content)
+            .commit()
+            .await?;
+
+        let book = BookmarkKey::new("master")?;
+        let hg_server = repo.derive_hg_changeset(ctx, server).await?;
+        set_bookmark(ctx.clone(), repo, &book, &format!("{}", hg_server)).await?;
+
+        let client_content = "line1\nline2\nline3\nline4\nmodified_line5\n";
+        let client = CreateCommitContext::new(ctx, repo, vec![base])
+            .add_file("file.txt", client_content)
+            .commit()
+            .await?;
+        let client_bcs = client.load(ctx, repo.repo_blobstore()).await?;
+
+        Ok((client_bcs, book))
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pushrebase_merge_resolution_override_forces_off(
+        fb: FacebookInit,
+    ) -> Result<(), Error> {
+        // JK on, override off → must conflict.
+        let ctx = CoreContext::test_mock(fb);
+        let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+        let (client_bcs, book) = setup_non_overlapping_conflict(&ctx, &repo).await?;
+
+        init_just_knobs_for_merge_test();
+
+        let config = PushrebaseFlags {
+            merge_resolution_override: Some(false),
+            ..Default::default()
+        };
+
+        let result =
+            do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await;
+
+        should_have_conflicts(result);
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pushrebase_merge_resolution_override_forces_on(fb: FacebookInit) -> Result<(), Error> {
+        // JK off, override on → must merge cleanly.
+        let ctx = CoreContext::test_mock(fb);
+        let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+        let (client_bcs, book) = setup_non_overlapping_conflict(&ctx, &repo).await?;
+
+        override_just_knobs(JustKnobsInMemory::new(hashmap! {
+            "scm/mononoke:pushrebase_enable_merge_resolution".to_string() => KnobVal::Bool(false),
+            "scm/mononoke:pushrebase_merge_resolution_derive_fsnodes".to_string() => KnobVal::Bool(true),
+        }));
+
+        let config = PushrebaseFlags {
+            merge_resolution_override: Some(true),
+            ..Default::default()
+        };
+
+        let result =
+            do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await?;
+
+        let result_hg = repo.derive_hg_changeset(&ctx, result.head).await?;
+        let expected_content = "modified_line1\nline2\nline3\nline4\nmodified_line5\n";
+        ensure_content(
+            &ctx,
+            result_hg,
+            &repo,
+            btreemap! {
+                "file.txt".to_string() => expected_content.to_string(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[mononoke::fbinit_test]
+    async fn pushrebase_merge_resolution_override_none_falls_through(
+        fb: FacebookInit,
+    ) -> Result<(), Error> {
+        // No override, JK off → must conflict (historical path).
+        let ctx = CoreContext::test_mock(fb);
+        let repo: PushrebaseTestRepo = test_repo_factory::build_empty(fb).await?;
+        let (client_bcs, book) = setup_non_overlapping_conflict(&ctx, &repo).await?;
+
+        override_just_knobs(JustKnobsInMemory::new(hashmap! {
+            "scm/mononoke:pushrebase_enable_merge_resolution".to_string() => KnobVal::Bool(false),
+            "scm/mononoke:pushrebase_merge_resolution_derive_fsnodes".to_string() => KnobVal::Bool(true),
+        }));
+
+        let config = PushrebaseFlags {
+            merge_resolution_override: None,
+            ..Default::default()
+        };
+
+        let result =
+            do_pushrebase_bonsai(&ctx, &repo, &config, &book, &hashset![client_bcs], &[]).await;
+
+        should_have_conflicts(result);
+        Ok(())
+    }
 }
