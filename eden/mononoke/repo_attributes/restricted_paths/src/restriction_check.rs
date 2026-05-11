@@ -8,6 +8,7 @@
 //! Restriction check helpers that turn restriction lookup results into
 //! authorization results.
 
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -414,13 +415,17 @@ pub(crate) struct SharedFetchHandle<T: SourceRestrictionCheck> {
 
 impl<T: SourceRestrictionCheck + Send + Sync + 'static> SharedFetchHandle<T> {
     pub(crate) fn from_join_handle(handle: JoinHandle<Result<Vec<T>>>) -> Self {
+        Self::from_future(async move { handle.await.map_err(anyhow::Error::from)? })
+    }
+
+    pub(crate) fn from_future(
+        fetch: impl Future<Output = Result<Vec<T>>> + Send + 'static,
+    ) -> Self {
         let inner = async move {
-            match handle.await {
-                Ok(result) => result
-                    .map(SourceRestrictionChecks::new)
-                    .map_err(SourceRestrictionError::from),
-                Err(join_err) => Err(SourceRestrictionError::from(anyhow::Error::from(join_err))),
-            }
+            fetch
+                .await
+                .map(SourceRestrictionChecks::new)
+                .map_err(SourceRestrictionError::from)
         }
         .boxed()
         .shared();
