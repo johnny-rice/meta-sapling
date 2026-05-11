@@ -404,14 +404,6 @@ pub trait HgCommands {
     fn stream_out_shallow(&self, _tag: Option<String>) -> BoxStream<'static, Result<Bytes, Error>> {
         once(async { Err(ErrorKind::Unimplemented("stream_out_shallow".into()).into()) }).boxed()
     }
-
-    // @wireprotocommand('getcommitdata', 'nodes *')
-    fn getcommitdata(
-        &self,
-        _nodes: Vec<HgChangesetId>,
-    ) -> BoxStream<'static, Result<Bytes, Error>> {
-        once(async { Err(ErrorKind::Unimplemented("getcommitdata".into()).into()) }).boxed()
-    }
 }
 
 #[cfg(test)]

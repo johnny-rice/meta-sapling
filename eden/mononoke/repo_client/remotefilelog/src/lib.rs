@@ -108,50 +108,9 @@ fn rescue_redacted(res: Result<(Bytes, FileBytes)>) -> Result<(Bytes, FileBytes)
     }
 }
 
-/// Create a blob for getpack v1. This returns a future that resolves with an estimated weight for
+/// Create a blob for getpack v2. This returns a future that resolves with an estimated weight for
 /// this blob (this is NOT trying to be correct, it's just a rough estimate!), and the blob's
-/// bytes.
-pub async fn create_getpack_v1_blob<T: RepoLike>(
-    ctx: &CoreContext,
-    repo: &T,
-    node: HgFileNodeId,
-    validate_hash: bool,
-) -> Result<(
-    GetpackBlobInfo,
-    impl Future<Output = Result<(HgFileNodeId, Bytes)>> + use<T>,
-)> {
-    let RemotefilelogBlob { kind, data } = prepare_blob(
-        ctx,
-        repo,
-        node,
-        SessionLfsParams { threshold: None },
-        validate_hash,
-    )
-    .await?;
-    use RemotefilelogBlobKind::*;
-
-    let getpack_blob_data = match kind {
-        Inline(size) => GetpackBlobInfo {
-            filesize: size,
-            weight: size,
-        },
-        Lfs(_) => unreachable!(), // lfs_threshold = None implies no LFS blobs.
-    };
-
-    let fut = data
-        .map(rescue_redacted)
-        .map_ok(move |(meta_bytes, file_bytes)| {
-            // TODO (T30456231): Avoid this copy
-            let mut buff = BytesMut::with_capacity(meta_bytes.len() + file_bytes.as_bytes().len());
-            buff.extend_from_slice(&meta_bytes);
-            buff.extend_from_slice(file_bytes.as_bytes());
-            (node, buff.freeze())
-        });
-
-    Ok((getpack_blob_data, fut))
-}
-
-/// Create a blob for getpack v2. See v1 above for general details. This also returns Metadata,
+/// bytes. This also returns Metadata,
 /// which is present in the v2 version of the protocol.
 pub async fn create_getpack_v2_blob<T: RepoLike>(
     ctx: &CoreContext,

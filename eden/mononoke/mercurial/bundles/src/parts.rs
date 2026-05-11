@@ -291,15 +291,6 @@ where
     treepack_part_impl(entries, PartHeaderType::B2xTreegroup2, hg_cache_policy)
 }
 
-pub fn pushrebase_treepack_part<S>(entries: S) -> Result<PartEncodeBuilder>
-where
-    S: Stream<Item = Result<BoxFuture<'static, Result<TreepackPartInput, Error>>, Error>>
-        + Send
-        + 'static,
-{
-    treepack_part_impl(entries, PartHeaderType::B2xRebasePack, StoreInHgCache::Yes)
-}
-
 fn treepack_part_impl<S>(
     entries: S,
     header_type: PartHeaderType,
