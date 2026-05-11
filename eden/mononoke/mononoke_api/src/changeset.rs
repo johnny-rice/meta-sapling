@@ -110,6 +110,8 @@ use crate::specifiers::HgChangesetId;
 
 mod find_files;
 
+const ENABLE_BONSAI_ONLY_LFS_DIFFS: &str = "scm/mononoke:changeset_diff_enable_bonsai_only_lfs";
+
 /// Algorithm version for changeset content fingerprinting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FingerprintVersion {
@@ -1425,8 +1427,14 @@ impl<R: MononokeRepo> ChangesetContext<R> {
         let mut inv_copy_path_map = HashMap::new();
         let mut manifest_replacements = HashMap::new();
         let mut subtree_copy_sources = manifest::PathTree::default();
+        let parents = self.parents().await?;
         // We can only consider copies or subtree copies when comparing with a parent
-        let comparing_against_parent = self.parents().await?.contains(&other.id);
+        let comparing_against_parent = parents.contains(&other.id);
+        // The bonsai-only LFS supplement is only valid when `other` is `self`'s
+        // first parent; this matches the common-case `commit_compare` usage and
+        // avoids emitting spurious entries for merge changesets compared
+        // against a non-leftmost parent.
+        let first_parent_is_other = parents.first() == Some(&other.id);
         if comparing_against_parent && include_copies_renames {
             let file_changes = self.file_changes().await?;
             let mut to_paths = HashSet::new();
@@ -1614,6 +1622,12 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             }
         };
 
+        let is_ordered = matches!(ordering, ChangesetFileOrdering::Ordered { .. });
+        let supplement_after: Option<MPath> = match &ordering {
+            ChangesetFileOrdering::Ordered { after } => after.clone(),
+            ChangesetFileOrdering::Unordered => None,
+        };
+
         let diff = match ordering {
             ChangesetFileOrdering::Unordered => {
                 // We start from "other" as manifest.diff() is backwards.
@@ -1686,7 +1700,7 @@ impl<R: MononokeRepo> ChangesetContext<R> {
 
         let convert_entry = |e: ManifestEntry<compat::ContentManifestId, _>| e.map_leaf(Into::into);
 
-        let change_contexts = diff
+        let mut change_contexts: Vec<ChangesetPathDiffContext<R>> = diff
             .map_ok(|diff_entry| match diff_entry {
                 ManifestDiff::Added(path, entry) => ManifestDiff::Added(path, convert_entry(entry)),
                 ManifestDiff::Removed(path, entry) => {
@@ -1924,6 +1938,58 @@ impl<R: MononokeRepo> ChangesetContext<R> {
             .take(limit.unwrap_or(usize::MAX))
             .try_collect::<Vec<_>>()
             .await?;
+
+        let supplement_enabled = first_parent_is_other
+            && diff_files
+            && self
+                .repo_ctx()
+                .repo()
+                .repo_config()
+                .git_configs
+                .git_lfs_interpret_pointers
+            && justknobs::eval(
+                ENABLE_BONSAI_ONLY_LFS_DIFFS,
+                None,
+                Some(self.repo_ctx().name()),
+            )?;
+        if supplement_enabled {
+            // Ordered mode only needs supplement paths up to the final manifest
+            // entry in this page: anything after it cannot affect the first
+            // `limit` entries of the sorted union. If the manifest page is
+            // short, scan to the end so supplement-only tail entries can fill
+            // it.
+            let supplement_before_or_at =
+                if is_ordered && limit.is_some_and(|l| change_contexts.len() == l) {
+                    change_contexts.last().map(|d| d.path().clone())
+                } else {
+                    None
+                };
+            let supplement_max = if is_ordered {
+                limit.unwrap_or(usize::MAX)
+            } else {
+                limit.map_or(usize::MAX, |l| l.saturating_sub(change_contexts.len()))
+            };
+
+            if supplement_max > 0 {
+                let excluded_paths: HashSet<MPath> =
+                    change_contexts.iter().map(|c| c.path().clone()).collect();
+                let supplement = self
+                    .get_potential_lfs_changes(
+                        other,
+                        &path_restrictions,
+                        &subtree_copy_sources,
+                        &excluded_paths,
+                        supplement_after.as_ref(),
+                        supplement_before_or_at.as_ref(),
+                        supplement_max,
+                    )
+                    .await?;
+                insert_sorted_results(&mut change_contexts, supplement, is_ordered);
+                if let Some(l) = limit {
+                    change_contexts.truncate(l);
+                }
+            }
+        }
         Ok(change_contexts)
     }
 

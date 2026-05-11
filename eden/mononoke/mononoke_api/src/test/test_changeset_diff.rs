@@ -15,7 +15,12 @@ use anyhow::anyhow;
 use fbinit::FacebookInit;
 use fixtures::ManyFilesDirs;
 use fixtures::TestRepoFixture;
+use futures::FutureExt;
+use justknobs::test_helpers::JustKnobsInMemory;
+use justknobs::test_helpers::KnobVal;
+use justknobs::test_helpers::with_just_knobs_async;
 use maplit::btreeset;
+use maplit::hashmap;
 use mononoke_macros::mononoke;
 use mononoke_types::ChangesetId;
 use mononoke_types::FileType;
@@ -33,7 +38,6 @@ use crate::CoreContext;
 use crate::HgChangesetId;
 use crate::Mononoke;
 use crate::RepoContext;
-use crate::changeset::insert_sorted_results;
 use crate::repo::MononokeRepo;
 use crate::repo::Repo;
 
@@ -1290,33 +1294,19 @@ async fn diff_files_only(
         .await?)
 }
 
-async fn supplement_for(
-    child: &ChangesetContext<Repo>,
-    parent: &ChangesetContext<Repo>,
-) -> Result<Vec<ChangesetPathDiffContext<Repo>>, Error> {
-    let subtree_copy_sources = manifest::PathTree::default();
-    let excluded_paths = std::collections::HashSet::new();
-    Ok(child
-        .get_potential_lfs_changes(
-            parent,
-            &None,
-            &subtree_copy_sources,
-            &excluded_paths,
-            None,
-            None,
-            usize::MAX,
-        )
-        .await?)
-}
-
 fn paths_of<R: MononokeRepo>(diffs: &[ChangesetPathDiffContext<R>]) -> Vec<String> {
     diffs.iter().map(|d| d.path().to_string()).collect()
 }
 
 #[mononoke::fbinit_test]
-async fn test_insert_sorted_results_ordered_interleaves_by_path(
+async fn test_diff_ordered_interleaves_supplement_with_manifest(
     fb: FacebookInit,
 ) -> Result<(), Error> {
+    // Ordered diff over a fixture with two content-changed paths
+    // (`a_changed`, `c_changed`) and one LFS-only flip in between
+    // (`b_lfs_only`) must produce all three paths in sorted order. The
+    // supplement path is invisible to the manifest walk and must be merged
+    // in by `insert_sorted_results`.
     let ctx = CoreContext::test_mock(fb);
     let repo: Repo = build_lfs_enabled_repo(fb).await?;
     let (parent, child) = build_renormalize_with_content_changes(&ctx, &repo).await?;
@@ -1325,21 +1315,14 @@ async fn test_insert_sorted_results_ordered_interleaves_by_path(
     let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
     let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
 
-    let mut manifest_vec = diff_files_only(
+    let diff = diff_files_only(
         &child_ctx,
         &parent_ctx,
         ChangesetFileOrdering::Ordered { after: None },
     )
     .await?;
-    // Manifest walk sees only the two content-changed paths.
-    assert_eq!(paths_of(&manifest_vec), vec!["a_changed", "c_changed"]);
-
-    let supplement = supplement_for(&child_ctx, &parent_ctx).await?;
-    assert_eq!(paths_of(&supplement), vec!["b_lfs_only"]);
-
-    insert_sorted_results(&mut manifest_vec, supplement, true);
     assert_eq!(
-        paths_of(&manifest_vec),
+        paths_of(&diff),
         vec!["a_changed", "b_lfs_only", "c_changed"],
     );
 
@@ -1347,7 +1330,7 @@ async fn test_insert_sorted_results_ordered_interleaves_by_path(
 }
 
 #[mononoke::fbinit_test]
-async fn test_insert_sorted_results_unordered_appends(fb: FacebookInit) -> Result<(), Error> {
+async fn test_diff_unordered_includes_supplement(fb: FacebookInit) -> Result<(), Error> {
     let ctx = CoreContext::test_mock(fb);
     let repo: Repo = build_lfs_enabled_repo(fb).await?;
     let (parent, child) = build_renormalize_with_content_changes(&ctx, &repo).await?;
@@ -1356,65 +1339,336 @@ async fn test_insert_sorted_results_unordered_appends(fb: FacebookInit) -> Resul
     let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
     let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
 
-    let mut manifest_vec =
-        diff_files_only(&child_ctx, &parent_ctx, ChangesetFileOrdering::Unordered).await?;
-    let manifest_len_before = manifest_vec.len();
-    let supplement = supplement_for(&child_ctx, &parent_ctx).await?;
-    assert_eq!(paths_of(&supplement), vec!["b_lfs_only"]);
-
-    insert_sorted_results(&mut manifest_vec, supplement, false);
-    assert_eq!(manifest_vec.len(), manifest_len_before + 1);
-    assert!(
-        paths_of(&manifest_vec).contains(&"b_lfs_only".to_string()),
-        "supplement path should be appended in unordered mode",
+    let diff = diff_files_only(&child_ctx, &parent_ctx, ChangesetFileOrdering::Unordered).await?;
+    let paths: std::collections::BTreeSet<String> = paths_of(&diff).into_iter().collect();
+    assert_eq!(
+        paths,
+        ["a_changed", "b_lfs_only", "c_changed"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
     );
 
     Ok(())
 }
 
 #[mononoke::fbinit_test]
-async fn test_insert_sorted_results_empty_supplement_no_op(fb: FacebookInit) -> Result<(), Error> {
+async fn test_diff_detects_git_lfs_only_change(fb: FacebookInit) -> Result<(), Error> {
     let ctx = CoreContext::test_mock(fb);
     let repo: Repo = build_lfs_enabled_repo(fb).await?;
-    let (parent, child) = build_renormalize_with_content_changes(&ctx, &repo).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::FullContent,
+        GitLfs::canonical_pointer(),
+    )
+    .await?;
 
     let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
     let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
     let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
 
-    let mut manifest_vec = diff_files_only(
+    let unordered =
+        diff_files_only(&child_ctx, &parent_ctx, ChangesetFileOrdering::Unordered).await?;
+    check_diff_paths(&unordered, &["binary_file"]);
+
+    let ordered = diff_files_only(
         &child_ctx,
         &parent_ctx,
         ChangesetFileOrdering::Ordered { after: None },
     )
     .await?;
-    let before = paths_of(&manifest_vec);
-
-    insert_sorted_results(&mut manifest_vec, Vec::new(), true);
-    assert_eq!(paths_of(&manifest_vec), before);
-
-    insert_sorted_results(&mut manifest_vec, Vec::new(), false);
-    assert_eq!(paths_of(&manifest_vec), before);
+    check_diff_paths(&ordered, &["binary_file"]);
 
     Ok(())
 }
 
 #[mononoke::fbinit_test]
-async fn test_insert_sorted_results_empty_manifest(fb: FacebookInit) -> Result<(), Error> {
+async fn test_diff_lfs_supplement_skipped_when_jk_disabled(fb: FacebookInit) -> Result<(), Error> {
     let ctx = CoreContext::test_mock(fb);
     let repo: Repo = build_lfs_enabled_repo(fb).await?;
-    let (parent, child) = build_renormalize_with_content_changes(&ctx, &repo).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::FullContent,
+        GitLfs::canonical_pointer(),
+    )
+    .await?;
 
     let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
     let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
     let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
 
-    let supplement = supplement_for(&child_ctx, &parent_ctx).await?;
-    let supplement_paths = paths_of(&supplement);
+    let jk_off = JustKnobsInMemory::new(hashmap! {
+        "scm/mononoke:changeset_diff_enable_bonsai_only_lfs".to_string()
+            => KnobVal::Bool(false),
+    });
+    let diff = with_just_knobs_async(
+        jk_off,
+        diff_files_only(&child_ctx, &parent_ctx, ChangesetFileOrdering::Unordered).boxed(),
+    )
+    .await?;
+    check_diff_paths(&diff, &[]);
 
-    let mut manifest_vec: Vec<ChangesetPathDiffContext<Repo>> = Vec::new();
-    insert_sorted_results(&mut manifest_vec, supplement, true);
-    assert_eq!(paths_of(&manifest_vec), supplement_paths);
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_diff_lfs_supplement_skipped_when_repo_lfs_disabled(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = test_repo_factory::build_empty(fb).await?;
+    let (parent, child) = build_lfs_flip_pair(
+        &ctx,
+        &repo,
+        GitLfs::FullContent,
+        GitLfs::canonical_pointer(),
+    )
+    .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    let diff = diff_files_only(&child_ctx, &parent_ctx, ChangesetFileOrdering::Unordered).await?;
+    let paths: std::collections::BTreeSet<String> =
+        diff.iter().map(|d| d.path().to_string()).collect();
+    assert!(
+        !paths.contains("binary_file"),
+        "supplement must not fire when git_lfs_interpret_pointers=false (paths: {:?})",
+        paths,
+    );
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_diff_lfs_supplement_skipped_for_non_first_parent_compare(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+
+    // C-vs-A: a "skip-parent" compare where A is not the immediate parent.
+    let a = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file("anchor", "anchor")
+        .commit()
+        .await?;
+    let b = CreateCommitContext::new(&ctx, &repo, vec![a])
+        .add_file("anchor", "anchor_b")
+        .commit()
+        .await?;
+    let c = CreateCommitContext::new(&ctx, &repo, vec![b])
+        .add_file_with_type_and_lfs(
+            "binary_file",
+            "shared blob",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    // Merge against non-leftmost parent: M-vs-P1.
+    let p0 = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "merge_target",
+            "shared",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file("p0_marker", "p0")
+        .commit()
+        .await?;
+    let p1 = CreateCommitContext::new_root(&ctx, &repo)
+        .add_file_with_type_and_lfs(
+            "merge_target",
+            "shared",
+            FileType::Regular,
+            GitLfs::FullContent,
+        )
+        .add_file("p1_marker", "p1")
+        .commit()
+        .await?;
+    let m = CreateCommitContext::new(&ctx, &repo, vec![p0, p1])
+        .add_file_with_type_and_lfs(
+            "merge_target",
+            "shared",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .commit()
+        .await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let a_ctx = changeset_ctx(&repo_ctx, a, "A").await?;
+    let c_ctx = changeset_ctx(&repo_ctx, c, "C").await?;
+    let p0_ctx = changeset_ctx(&repo_ctx, p0, "P0").await?;
+    let p1_ctx = changeset_ctx(&repo_ctx, p1, "P1").await?;
+    let m_ctx = changeset_ctx(&repo_ctx, m, "M").await?;
+
+    let diff_c_vs_a = diff_files_only(&c_ctx, &a_ctx, ChangesetFileOrdering::Unordered).await?;
+    let paths_c_vs_a: std::collections::BTreeSet<String> =
+        diff_c_vs_a.iter().map(|d| d.path().to_string()).collect();
+    assert!(
+        !paths_c_vs_a.contains("binary_file"),
+        "C vs A must not surface binary_file via the supplement (paths: {:?})",
+        paths_c_vs_a,
+    );
+
+    let diff_m_vs_p1 = diff_files_only(&m_ctx, &p1_ctx, ChangesetFileOrdering::Unordered).await?;
+    let paths_m_vs_p1: std::collections::BTreeSet<String> =
+        diff_m_vs_p1.iter().map(|d| d.path().to_string()).collect();
+    assert!(
+        !paths_m_vs_p1.contains("merge_target"),
+        "M vs P1 (non-leftmost parent) must not surface merge_target via the supplement (paths: {:?})",
+        paths_m_vs_p1,
+    );
+
+    let diff_m_vs_p0 = diff_files_only(&m_ctx, &p0_ctx, ChangesetFileOrdering::Unordered).await?;
+    let paths_m_vs_p0: std::collections::BTreeSet<String> =
+        diff_m_vs_p0.iter().map(|d| d.path().to_string()).collect();
+    assert!(
+        paths_m_vs_p0.contains("merge_target"),
+        "M vs P0 (first parent) must surface merge_target via the supplement (paths: {:?})",
+        paths_m_vs_p0,
+    );
+
+    Ok(())
+}
+
+/// Build a fixture with five paths between parent and child: `a`, `b`, `c`,
+/// `d` (optional), `e` are content-changed, and `b` is *also* an LFS flip
+/// (so manifest still emits it from content change, supplement filter
+/// excludes it). Wait, no: we want a supplement-only path between content
+/// changes. Use distinct paths: `a`, `c`, `d`, `e` are content-changed and
+/// `b` is supplement-only (LFS flip with same content).
+async fn build_renormalize_pair(
+    ctx: &CoreContext,
+    repo: &Repo,
+    include_d: bool,
+) -> Result<(ChangesetId, ChangesetId), Error> {
+    let mut parent = CreateCommitContext::new_root(ctx, repo)
+        .add_file_with_type_and_lfs("a", "a1", FileType::Regular, GitLfs::FullContent)
+        .add_file_with_type_and_lfs("b", "shared", FileType::Regular, GitLfs::FullContent)
+        .add_file_with_type_and_lfs("c", "c1", FileType::Regular, GitLfs::FullContent)
+        .add_file_with_type_and_lfs("e", "e1", FileType::Regular, GitLfs::FullContent);
+    if include_d {
+        parent =
+            parent.add_file_with_type_and_lfs("d", "d1", FileType::Regular, GitLfs::FullContent);
+    }
+    let parent = parent.commit().await?;
+
+    let mut child = CreateCommitContext::new(ctx, repo, vec![parent])
+        .add_file_with_type_and_lfs("a", "a2", FileType::Regular, GitLfs::FullContent)
+        .add_file_with_type_and_lfs(
+            "b",
+            "shared",
+            FileType::Regular,
+            GitLfs::canonical_pointer(),
+        )
+        .add_file_with_type_and_lfs("c", "c2", FileType::Regular, GitLfs::FullContent)
+        .add_file_with_type_and_lfs("e", "e2", FileType::Regular, GitLfs::FullContent);
+    if include_d {
+        child = child.add_file_with_type_and_lfs("d", "d2", FileType::Regular, GitLfs::FullContent);
+    }
+    let child = child.commit().await?;
+    Ok((parent, child))
+}
+
+#[mononoke::fbinit_test]
+async fn test_diff_ordered_renormalize_within_page_sort_order(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let (parent, child) = build_renormalize_pair(&ctx, &repo, false).await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    let diff = diff_files_only(
+        &child_ctx,
+        &parent_ctx,
+        ChangesetFileOrdering::Ordered { after: None },
+    )
+    .await?;
+    check_diff_paths(&diff, &["a", "b", "c", "e"]);
+
+    Ok(())
+}
+
+#[mononoke::fbinit_test]
+async fn test_diff_ordered_renormalize_pagination_uses_supplement_cursor(
+    fb: FacebookInit,
+) -> Result<(), Error> {
+    let ctx = CoreContext::test_mock(fb);
+    let repo: Repo = build_lfs_enabled_repo(fb).await?;
+    let (parent, child) = build_renormalize_pair(&ctx, &repo, true).await?;
+
+    let repo_ctx = repo_ctx_for_test(&ctx, repo).await?;
+    let parent_ctx = changeset_ctx(&repo_ctx, parent, "parent").await?;
+    let child_ctx = changeset_ctx(&repo_ctx, child, "child").await?;
+
+    let page1 = child_ctx
+        .diff(
+            &parent_ctx,
+            false,
+            false,
+            None,
+            btreeset! {ChangesetDiffItem::FILES},
+            ChangesetFileOrdering::Ordered { after: None },
+            Some(2),
+        )
+        .await?;
+    check_diff_paths(&page1, &["a", "b"]);
+    let page1_last = page1
+        .last()
+        .ok_or_else(|| anyhow!("page 1 must not be empty"))?
+        .path()
+        .clone();
+
+    let page2 = child_ctx
+        .diff(
+            &parent_ctx,
+            false,
+            false,
+            None,
+            btreeset! {ChangesetDiffItem::FILES},
+            ChangesetFileOrdering::Ordered {
+                after: Some(page1_last),
+            },
+            Some(2),
+        )
+        .await?;
+    check_diff_paths(&page2, &["c", "d"]);
+    let page2_last = page2
+        .last()
+        .ok_or_else(|| anyhow!("page 2 must not be empty"))?
+        .path()
+        .clone();
+
+    let page3 = child_ctx
+        .diff(
+            &parent_ctx,
+            false,
+            false,
+            None,
+            btreeset! {ChangesetDiffItem::FILES},
+            ChangesetFileOrdering::Ordered {
+                after: Some(page2_last),
+            },
+            Some(2),
+        )
+        .await?;
+    check_diff_paths(&page3, &["e"]);
 
     Ok(())
 }
