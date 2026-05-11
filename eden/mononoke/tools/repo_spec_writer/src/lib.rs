@@ -45,10 +45,12 @@ pub fn make_repo_spec_file_path(repo_name: &str) -> String {
 }
 
 /// Returns the tier list for a new RepoSpec-based repo, as static string slices.
-/// Repos under the `aosp/` prefix are additionally placed in the
-/// `aosp_multi_repo_land` tier so multi_repo_land_service can serve them.
+/// Repos whose name contains the `aosp/` substring are additionally placed in
+/// the `aosp_multi_repo_land` tier so multi_repo_land_service can serve them.
+/// This catches both top-level AOSP repos like `aosp/platform/...` and nested
+/// ones like `oculus/aosp/vendor/oculus`.
 pub fn tier_list_for_repo_spec(repo_name: &str) -> Vec<&'static str> {
-    if repo_name.starts_with("aosp/") {
+    if repo_name.contains("aosp/") {
         vec![
             "gitimport",
             "gitimport_content",
@@ -203,6 +205,15 @@ mod tests {
     fn tier_list_non_aosp_excludes_multi_repo_land() {
         let tiers = tier_list_for_repo_spec("manus/next-agent-webapp");
         assert_eq!(tiers, vec!["gitimport", "gitimport_content", "scs"]);
+    }
+
+    #[mononoke::test]
+    fn tier_list_nested_aosp_includes_multi_repo_land() {
+        let tiers = tier_list_for_repo_spec("oculus/aosp/vendor/oculus");
+        assert!(
+            tiers.contains(&"aosp_multi_repo_land"),
+            "repos with aosp/ as a substring (e.g. oculus/aosp/vendor/oculus) must be on the aosp_multi_repo_land tier"
+        );
     }
 
     #[mononoke::test]

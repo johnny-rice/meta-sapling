@@ -594,7 +594,8 @@ fn make_repo_definition_file_path(repo_id: &RepositoryId) -> String {
 
 /// Returns the tier list for a new repo as owned `String`s
 /// (matches the type used by `QuickRepoDefinition::config_tiers`).
-/// See `repo_spec_writer::tier_list_for_repo_spec` for prefix-based behavior.
+/// See `repo_spec_writer::tier_list_for_repo_spec` for substring-based
+/// `aosp/` matching behavior.
 fn tier_list_for_repo(repo_name: &str) -> Vec<String> {
     tier_list_for_repo_spec(repo_name)
         .into_iter()
@@ -1509,28 +1510,44 @@ mod tests {
     }
 
     #[mononoke::test]
-    fn test_tier_list_for_repo_spec_non_aosp_unchanged() {
+    fn test_tier_list_for_repo_spec_nested_aosp_adds_multi_repo_land() {
+        // Substring match: repos with `aosp/` deeper in the path (e.g. the
+        // Oculus AOSP fork) must also be on the aosp_multi_repo_land tier.
         assert_eq!(
-            tier_list_for_repo_spec("not_aosp/foo"),
+            tier_list_for_repo_spec("oculus/aosp/vendor/oculus"),
+            vec![
+                "gitimport",
+                "gitimport_content",
+                "scs",
+                "aosp_multi_repo_land",
+            ],
+            "repos containing aosp/ as a substring must include aosp_multi_repo_land tier"
+        );
+    }
+
+    #[mononoke::test]
+    fn test_tier_list_for_repo_spec_non_aosp_excluded_from_multi_repo_land() {
+        assert_eq!(
+            tier_list_for_repo_spec("manus/foo"),
             vec!["gitimport", "gitimport_content", "scs"],
-            "non-aosp/* repos must NOT include aosp_multi_repo_land tier"
+            "non-aosp repos must NOT include aosp_multi_repo_land tier"
         );
         assert_eq!(
             tier_list_for_repo_spec("simple-repo"),
             vec!["gitimport", "gitimport_content", "scs"],
             "simple repos must NOT include aosp_multi_repo_land tier"
         );
-        // Boundary: a repo literally named "aosp" (no slash) is NOT under the aosp/ prefix.
+        // Boundary: a repo literally named "aosp" (no slash) does NOT contain `aosp/`.
         assert_eq!(
             tier_list_for_repo_spec("aosp"),
             vec!["gitimport", "gitimport_content", "scs"],
-            "literal name 'aosp' (no trailing /) is NOT an aosp/* repo"
+            "literal name 'aosp' (no trailing /) must NOT match the aosp/ substring"
         );
         // Boundary: confusingly-named prefix that shares "aosp" but isn't `aosp/`.
         assert_eq!(
             tier_list_for_repo_spec("aosp_extras/foo"),
             vec!["gitimport", "gitimport_content", "scs"],
-            "aosp_extras/* must NOT match the aosp/ prefix"
+            "aosp_extras/* must NOT match the aosp/ substring"
         );
     }
 
