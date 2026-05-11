@@ -644,16 +644,15 @@ fn condition_set_has_active_filter(set: &EnforcementConditionSet) -> bool {
 
 pub(crate) fn condition_sets_match_restriction_acls(
     condition_sets: &[&EnforcementConditionSet],
-    restriction_acls: &[MononokeIdentity],
+    restriction_acls: &[&MononokeIdentity],
 ) -> bool {
     condition_sets.iter().any(|set| {
         condition_set_has_active_filter(set)
             && (set.restriction_acls.is_empty()
-                || set.restriction_acls.iter().any(|condition_acl| {
-                    restriction_acls
-                        .iter()
-                        .any(|restriction_acl| restriction_acl == condition_acl)
-                }))
+                || set
+                    .restriction_acls
+                    .iter()
+                    .any(|condition_acl| restriction_acls.contains(&condition_acl)))
     })
 }
 

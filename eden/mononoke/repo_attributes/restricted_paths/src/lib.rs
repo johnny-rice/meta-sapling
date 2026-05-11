@@ -370,10 +370,10 @@ impl RestrictedPaths {
     fn restriction_acls_for_roots(
         &self,
         restriction_roots: &[NonRootMPath],
-    ) -> Vec<permission_checker::MononokeIdentity> {
+    ) -> Vec<&permission_checker::MononokeIdentity> {
         restriction_roots
             .iter()
-            .filter_map(|root| self.config().path_acls.get(root).cloned())
+            .filter_map(|root| self.config().path_acls.get(root))
             .collect()
     }
 }
