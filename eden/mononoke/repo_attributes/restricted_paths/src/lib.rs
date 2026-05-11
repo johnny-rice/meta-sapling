@@ -385,7 +385,7 @@ fn should_enforce_check_result(
 ) -> bool {
     match pre_filter_result {
         PreFilterResult::NoMatch => false,
-        PreFilterResult::DefiniteMatch => true,
+        PreFilterResult::DefiniteMatch { candidates } => !candidates.is_empty(),
         PreFilterResult::NeedsFetch { candidates } => {
             let restriction_acls =
                 restricted_paths.restriction_acls_for_roots(&check_result.restriction_roots);

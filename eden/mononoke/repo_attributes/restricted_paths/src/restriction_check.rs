@@ -451,7 +451,9 @@ impl<T: SourceRestrictionCheck + Send + Sync + 'static> SharedFetchHandle<T> {
 /// the accessed restricted root is in scope.
 pub(crate) enum PreFilterResult<'a> {
     NoMatch,
-    DefiniteMatch,
+    DefiniteMatch {
+        candidates: Vec<&'a EnforcementConditionSet>,
+    },
     NeedsFetch {
         candidates: Vec<&'a EnforcementConditionSet>,
     },
@@ -627,7 +629,7 @@ pub(crate) fn pre_filter_condition_sets<'a>(
     }
 
     if candidates.iter().any(|set| set.always_enabled) {
-        PreFilterResult::DefiniteMatch
+        PreFilterResult::DefiniteMatch { candidates }
     } else {
         PreFilterResult::NeedsFetch { candidates }
     }
