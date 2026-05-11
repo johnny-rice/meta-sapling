@@ -20,15 +20,6 @@ Configure restricted paths: "restricted" directory is restricted.
   > cache_update_interval_ms = 1000
   > EOF
 
-Force config-based restricted paths (not ACL manifest).
-  $ merge_just_knobs <<EOF
-  > {
-  >   "bools": {
-  >     "scm/mononoke:use_acl_manifest_for_restricted_paths": false
-  >   }
-  > }
-  > EOF
-
   $ start_and_wait_for_mononoke_server
   $ hg clone -q mono:repo repo
   $ cd repo
