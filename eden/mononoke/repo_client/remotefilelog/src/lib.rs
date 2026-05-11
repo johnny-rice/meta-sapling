@@ -5,37 +5,25 @@
  * GNU General Public License version 2.
  */
 
-use std::collections::HashSet;
 use std::fmt;
 
 use anyhow::Result;
-use blobrepo_hg::file_history::get_file_history_maybe_incomplete;
 use blobstore::Loadable;
-use bonsai_hg_mapping::BonsaiHgMappingRef;
 use bytes::Bytes;
 use bytes::BytesMut;
 use cloned::cloned;
-use commit_graph::CommitGraphRef;
 use context::CoreContext;
-use filenodes::FilenodesRef;
 use filestore::FetchKey;
 use futures::Future;
 use futures::FutureExt;
-use futures::Stream;
-use futures::StreamExt;
 use futures::TryFutureExt;
-use futures::TryStreamExt;
-use futures::future;
 use futures::future::BoxFuture;
-use futures::stream::select_all::select_all;
 use getbundle_response::SessionLfsParams;
 use mercurial_types::FileBytes;
 use mercurial_types::HgFileEnvelope;
 use mercurial_types::HgFileEnvelopeMut;
-use mercurial_types::HgFileHistoryEntry;
 use mercurial_types::HgFileNodeId;
 use mercurial_types::HgParents;
-use mercurial_types::NonRootMPath;
 use mercurial_types::RevFlags;
 use mercurial_types::blobs::File;
 use mercurial_types::calculate_hg_node_id;
@@ -43,7 +31,6 @@ use redactedblobstore::has_redaction_root_cause;
 use repo_blobstore::RepoBlobstore;
 use repo_blobstore::RepoBlobstoreArc;
 use repo_blobstore::RepoBlobstoreRef;
-use repo_identity::RepoIdentityRef;
 use revisionstore_types::Metadata;
 use thiserror::Error;
 
@@ -190,40 +177,6 @@ pub async fn create_raw_filenode_blob(
     buff.extend_from_slice(&meta_bytes);
     buff.extend_from_slice(file_bytes.as_bytes());
     Ok(buff.freeze())
-}
-
-/// Get ancestors of all filenodes
-/// Current implementation might be inefficient because it might re-fetch the same filenode a few
-/// times
-pub fn get_unordered_file_history_for_multiple_nodes<
-    T: RepoLike
-        + RepoIdentityRef
-        + FilenodesRef
-        + CommitGraphRef
-        + BonsaiHgMappingRef
-        + Clone
-        + 'static,
->(
-    ctx: &CoreContext,
-    repo: &T,
-    filenodes: HashSet<HgFileNodeId>,
-    path: &NonRootMPath,
-    allow_short_getpack_history: bool,
-) -> impl Stream<Item = Result<HgFileHistoryEntry>> + use<T> {
-    let limit = if allow_short_getpack_history {
-        const REMOTEFILELOG_FILE_HISTORY_LIMIT: u64 = 1000;
-        Some(REMOTEFILELOG_FILE_HISTORY_LIMIT)
-    } else {
-        None
-    };
-    select_all(filenodes.into_iter().map(|filenode| {
-        get_file_history_maybe_incomplete(ctx.clone(), repo.clone(), filenode, path.clone(), limit)
-            .boxed()
-    }))
-    .try_filter({
-        let mut used_filenodes = HashSet::new();
-        move |entry| future::ready(used_filenodes.insert(entry.filenode().clone()))
-    })
 }
 
 async fn prepare_blob(

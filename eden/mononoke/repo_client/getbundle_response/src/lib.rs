@@ -59,7 +59,7 @@ use crate::errors::ErrorKind;
 
 mod errors;
 
-pub const GETBUNDLE_COMMIT_NUM_WARN: u64 = 1_000_000;
+const GETBUNDLE_COMMIT_NUM_WARN: u64 = 1_000_000;
 const UNEXPECTED_NONE_ERR_MSG: &str = "unexpected None while calling ancestors_difference_stream";
 
 pub trait Repo = CommitGraphArc
