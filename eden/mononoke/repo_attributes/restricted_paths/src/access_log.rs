@@ -207,7 +207,8 @@ pub(crate) async fn log_source_comparison_access_by_manifest_if_restricted(
     .await
     .map(SourceRestrictionChecks::new)
     .map_err(SourceRestrictionError::from);
-    let acl_manifest_result = if manifest_type == ManifestType::HgAugmented {
+    let fetch_acl_manifest = manifest_type == ManifestType::HgAugmented;
+    let acl_manifest_result = if fetch_acl_manifest {
         Some(
             restriction_check::check_manifest_restriction_from_source(
                 ctx,
@@ -259,8 +260,9 @@ pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
     .await
     .map(SourceRestrictionChecks::new)
     .map_err(SourceRestrictionError::from);
-    let acl_manifest_result = match cs_id {
-        Some(cs_id) => Some(
+    let fetch_acl_manifest = cs_id.is_some();
+    let acl_manifest_result = match (fetch_acl_manifest, cs_id) {
+        (true, Some(cs_id)) => Some(
             restriction_check::check_path_restriction_from_source(
                 ctx,
                 restricted_paths,
@@ -271,7 +273,7 @@ pub(crate) async fn log_source_comparison_access_by_path_if_restricted(
             .map(SourceRestrictionChecks::new)
             .map_err(SourceRestrictionError::from),
         ),
-        None => None,
+        _ => None,
     };
 
     let log_result = log_source_results_to_scuba(
